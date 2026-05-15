@@ -51,12 +51,21 @@ async def _ensure_mail_running():
         log.warning(f"Failed to launch Mail: {e}")
 
 
-async def _run_mail_script(script: str, timeout: float = 20) -> str:
-    """Run an AppleScript against Mail.app and return output."""
+async def _run_mail_script(script: str, timeout: float = 20, args: list[str] | None = None) -> str:
+    """Run an AppleScript against Mail.app and return output.
+
+    SECURITY: Pass untrusted values via ``args`` and read them in the
+    script as ``item N of argv`` inside ``on run argv ... end run``.
+    Never f-string user-controlled data into ``script``.
+    """
     await _ensure_mail_running()
     try:
+        cmd = ["osascript", "-e", script]
+        if args:
+            cmd.append("--")
+            cmd.extend(str(a) for a in args)
         proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -130,6 +139,7 @@ async def get_recent_messages(count: int = 10) -> list[dict]:
 
     Returns list of {"sender", "subject", "date", "read", "account", "preview"}.
     """
+    count = int(count)
     script = f"""
 tell application "Mail"
     set allMsgs to messages of inbox
@@ -179,6 +189,7 @@ end tell
 
 async def get_unread_messages(count: int = 10) -> list[dict]:
     """Get unread messages from unified inbox."""
+    count = int(count)
     script = f"""
 tell application "Mail"
     set allMsgs to messages of inbox whose read status is false
@@ -225,26 +236,29 @@ end tell
 
 async def get_messages_from_account(account_name: str, count: int = 10) -> list[dict]:
     """Get recent messages from a specific account's inbox."""
-    escaped = account_name.replace('"', '\\"')
+    count = int(count)
     script = f"""
-tell application "Mail"
-    set acctMsgs to messages of mailbox "INBOX" of account "{escaped}"
-    set msgCount to count of acctMsgs
-    set limit to msgCount
-    if limit > {count} then set limit to {count}
-    set output to ""
-    repeat with i from 1 to limit
-        set m to item i of acctMsgs
-        set s to sender of m
-        set subj to subject of m
-        set d to date received of m as string
-        set r to read status of m
-        set output to output & s & "|||" & subj & "|||" & d & "|||" & r & linefeed
-    end repeat
-    return output
-end tell
+on run argv
+    set acctName to item 1 of argv
+    tell application "Mail"
+        set acctMsgs to messages of mailbox "INBOX" of account acctName
+        set msgCount to count of acctMsgs
+        set limit to msgCount
+        if limit > {count} then set limit to {count}
+        set output to ""
+        repeat with i from 1 to limit
+            set m to item i of acctMsgs
+            set s to sender of m
+            set subj to subject of m
+            set d to date received of m as string
+            set r to read status of m
+            set output to output & s & "|||" & subj & "|||" & d & "|||" & r & linefeed
+        end repeat
+        return output
+    end tell
+end run
 """
-    raw = await _run_mail_script(script, timeout=20)
+    raw = await _run_mail_script(script, timeout=20, args=[account_name])
     if not raw:
         return []
 
@@ -267,27 +281,30 @@ async def search_mail(query: str, count: int = 10) -> list[dict]:
     Uses AppleScript filtering on subject. For broader search,
     we check both subject and sender.
     """
-    escaped = query.replace('"', '\\"').replace("\\", "\\\\")
+    count = int(count)
     script = f"""
-tell application "Mail"
-    set output to ""
-    set foundCount to 0
-    set allMsgs to messages of inbox
-    repeat with m in allMsgs
-        if foundCount >= {count} then exit repeat
-        set subj to subject of m
-        set s to sender of m
-        if subj contains "{escaped}" or s contains "{escaped}" then
-            set d to date received of m as string
-            set r to read status of m
-            set output to output & s & "|||" & subj & "|||" & d & "|||" & r & linefeed
-            set foundCount to foundCount + 1
-        end if
-    end repeat
-    return output
-end tell
+on run argv
+    set q to item 1 of argv
+    tell application "Mail"
+        set output to ""
+        set foundCount to 0
+        set allMsgs to messages of inbox
+        repeat with m in allMsgs
+            if foundCount >= {count} then exit repeat
+            set subj to subject of m
+            set s to sender of m
+            if subj contains q or s contains q then
+                set d to date received of m as string
+                set r to read status of m
+                set output to output & s & "|||" & subj & "|||" & d & "|||" & r & linefeed
+                set foundCount to foundCount + 1
+            end if
+        end repeat
+        return output
+    end tell
+end run
 """
-    raw = await _run_mail_script(script, timeout=30)
+    raw = await _run_mail_script(script, timeout=30, args=[query])
     if not raw:
         return []
 
@@ -309,27 +326,28 @@ async def read_message(subject_match: str) -> dict | None:
 
     Returns {"sender", "subject", "date", "content"} or None.
     """
-    escaped = subject_match.replace('"', '\\"').replace("\\", "\\\\")
-    script = f"""
-tell application "Mail"
-    set allMsgs to messages of inbox
-    repeat with m in allMsgs
-        if subject of m contains "{escaped}" then
-            set s to sender of m
-            set subj to subject of m
-            set d to date received of m as string
-            set c to content of m
-            -- Truncate very long emails
-            if length of c > 3000 then
-                set c to text 1 thru 3000 of c
+    script = """
+on run argv
+    set subjMatch to item 1 of argv
+    tell application "Mail"
+        set allMsgs to messages of inbox
+        repeat with m in allMsgs
+            if subject of m contains subjMatch then
+                set s to sender of m
+                set subj to subject of m
+                set d to date received of m as string
+                set c to content of m
+                if length of c > 3000 then
+                    set c to text 1 thru 3000 of c
+                end if
+                return s & "|||" & subj & "|||" & d & "|||" & c
             end if
-            return s & "|||" & subj & "|||" & d & "|||" & c
-        end if
-    end repeat
-    return ""
-end tell
+        end repeat
+        return ""
+    end tell
+end run
 """
-    raw = await _run_mail_script(script, timeout=20)
+    raw = await _run_mail_script(script, timeout=20, args=[subject_match])
     if not raw:
         return None
 

@@ -3,6 +3,17 @@ JARVIS Action Executor — AppleScript-based system actions.
 
 Execute actions IMMEDIATELY, before generating any LLM response.
 Each function returns {"success": bool, "confirmation": str}.
+
+Security:
+    Untrusted values (URLs, project names, prompts) MUST be passed to
+    AppleScript via `run_osascript` argv — never interpolated into the
+    script source. The script reads them as `item N of argv` inside an
+    `on run argv ... end run` handler, so a `"`, `\\n`, or `\\` in the
+    value cannot break out of the AppleScript string literal and inject
+    additional statements. Functions whose AppleScript uses `do script`
+    are *intentional shell exec*: callers must additionally validate
+    that the input is shell-safe (e.g. fixed string, regex-restricted
+    project name, etc).
 """
 
 import asyncio
@@ -11,11 +22,52 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Iterable
 from urllib.parse import quote
 
 log = logging.getLogger("jarvis.actions")
 
 DESKTOP_PATH = Path.home() / "Desktop"
+
+# Project-dir whitelist: alnum, dash, underscore, slash, dot. No quotes,
+# no shell metacharacters, no whitespace. Anchored at start/end.
+_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
+
+
+def _assert_safe_path(p: str, label: str = "path") -> None:
+    """Refuse paths that contain shell or AppleScript metacharacters.
+
+    Used at the boundary into any AppleScript that will `do script` the
+    value into a shell. Keeps the shell-injection class closed even if
+    a future caller forgets to sanitize.
+    """
+    if not p or not _SAFE_PATH_RE.match(p):
+        raise ValueError(f"unsafe {label}: contains disallowed characters: {p!r}")
+
+
+async def run_osascript(
+    script: str,
+    args: Iterable[str] = (),
+    *,
+    timeout: float | None = None,
+) -> tuple[int, bytes, bytes]:
+    """Run osascript with untrusted values passed via argv.
+
+    The script must use ``on run argv ... end run`` and reference values
+    as ``item N of argv``. The script source itself MUST be a constant
+    (no f-string interpolation of caller-supplied data); only the args
+    list is allowed to carry untrusted values.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "osascript", "-e", script, "--", *[str(a) for a in args],
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    if timeout is not None:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    else:
+        stdout, stderr = await proc.communicate()
+    return proc.returncode or 0, stdout, stderr
 
 
 async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
@@ -61,48 +113,54 @@ async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
         pass
 
 
+_REVERT_THEME_SCRIPT = '''
+on run argv
+    set profileName to item 1 of argv
+    tell application "Terminal"
+        set current settings of front window to settings set profileName
+    end tell
+end run
+'''
+
+
 async def _revert_terminal_theme(profile_name: str):
     """Revert a Terminal window back to its original profile."""
-    escaped = profile_name.replace('"', '\\"')
-    script = (
-        'tell application "Terminal"\n'
-        f'    set current settings of front window to settings set "{escaped}"\n'
-        'end tell'
-    )
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
+        await run_osascript(_REVERT_THEME_SCRIPT, [profile_name])
     except Exception:
         pass
 
 
+_OPEN_TERMINAL_WITH_CMD = '''
+on run argv
+    set cmd to item 1 of argv
+    tell application "Terminal"
+        activate
+        do script cmd
+    end tell
+end run
+'''
+
+_OPEN_TERMINAL_BARE = '''
+tell application "Terminal"
+    activate
+end tell
+'''
+
+
 async def open_terminal(command: str = "") -> dict:
-    """Open Terminal.app and optionally run a command. Marks it blue for JARVIS."""
+    """Open Terminal.app and optionally run a command. Marks it blue for JARVIS.
+
+    SECURITY: ``do script`` executes ``command`` as shell in Terminal.
+    Callers MUST pass either a fixed literal string or a value validated
+    upstream. argv-passing here closes the AppleScript-escape class, but
+    not the underlying shell-exec primitive.
+    """
     if command:
-        escaped = command.replace('"', '\\"')
-        script = (
-            'tell application "Terminal"\n'
-            "    activate\n"
-            f'    do script "{escaped}"\n'
-            "end tell"
-        )
+        rc, _, stderr = await run_osascript(_OPEN_TERMINAL_WITH_CMD, [command])
     else:
-        script = (
-            'tell application "Terminal"\n'
-            "    activate\n"
-            "end tell"
-        )
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    success = proc.returncode == 0
+        rc, _, stderr = await run_osascript(_OPEN_TERMINAL_BARE)
+    success = rc == 0
     if not success:
         log.error(f"open_terminal failed: {stderr.decode()}")
     else:
@@ -113,34 +171,36 @@ async def open_terminal(command: str = "") -> dict:
     }
 
 
+_OPEN_FIREFOX_SCRIPT = '''
+on run argv
+    set theURL to item 1 of argv
+    tell application "Firefox"
+        activate
+        open location theURL
+    end tell
+end run
+'''
+
+_OPEN_CHROME_SCRIPT = '''
+on run argv
+    set theURL to item 1 of argv
+    tell application "Google Chrome"
+        activate
+        open location theURL
+    end tell
+end run
+'''
+
+
 async def open_browser(url: str, browser: str = "chrome") -> dict:
     """Open URL in user's browser (Chrome or Firefox)."""
-    escaped_url = url.replace('"', '\\"')
-
     if browser.lower() == "firefox":
         app_name = "Firefox"
-        script = (
-            'tell application "Firefox"\n'
-            "    activate\n"
-            f'    open location "{escaped_url}"\n'
-            "end tell"
-        )
+        rc, _, stderr = await run_osascript(_OPEN_FIREFOX_SCRIPT, [url])
     else:
         app_name = "Chrome"
-        script = (
-            'tell application "Google Chrome"\n'
-            "    activate\n"
-            f'    open location "{escaped_url}"\n'
-            "end tell"
-        )
-
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    success = proc.returncode == 0
+        rc, _, stderr = await run_osascript(_OPEN_CHROME_SCRIPT, [url])
+    success = rc == 0
     if not success:
         log.error(f"open_browser ({app_name}) failed: {stderr.decode()}")
     return {
@@ -154,6 +214,17 @@ async def open_chrome(url: str) -> dict:
     return await open_browser(url, "chrome")
 
 
+_CLAUDE_IN_PROJECT_SCRIPT = '''
+on run argv
+    set cmd to item 1 of argv
+    tell application "Terminal"
+        activate
+        do script cmd
+    end tell
+end run
+'''
+
+
 async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
     """Open Terminal, cd to project dir, run Claude Code interactively.
 
@@ -165,20 +236,12 @@ async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
     claude_md = Path(project_dir) / "CLAUDE.md"
     claude_md.write_text(f"# Task\n\n{prompt}\n\nBuild this completely. If web app, make index.html work standalone.\n")
 
-    # Launch claude interactive — it reads CLAUDE.md on its own
-    script = (
-        'tell application "Terminal"\n'
-        "    activate\n"
-        f'    do script "cd {project_dir} && claude --dangerously-skip-permissions"\n'
-        "end tell"
-    )
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", "-e", script,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    success = proc.returncode == 0
+    # ``project_dir`` is concatenated into a shell command; reject anything
+    # outside the safe-path allowlist before letting it near a shell.
+    _assert_safe_path(project_dir, "project_dir")
+    cmd = f"cd {project_dir} && claude --dangerously-skip-permissions"
+    rc, _, stderr = await run_osascript(_CLAUDE_IN_PROJECT_SCRIPT, [cmd])
+    success = rc == 0
     if not success:
         log.error(f"open_claude_in_project failed: {stderr.decode()}")
     else:
@@ -191,63 +254,64 @@ async def open_claude_in_project(project_dir: str, prompt: str) -> dict:
     }
 
 
+_PROMPT_EXISTING_TERMINAL_SCRIPT = '''
+on run argv
+    set targetName to item 1 of argv
+    set userPrompt to item 2 of argv
+    tell application "Terminal"
+        set matched to false
+        set targetWindow to missing value
+        repeat with w in windows
+            if name of w contains targetName then
+                set targetWindow to w
+                set matched to true
+                exit repeat
+            end if
+        end repeat
+
+        if not matched then
+            return "NOT_FOUND"
+        end if
+
+        set index of targetWindow to 1
+        set selected tab of targetWindow to selected tab of targetWindow
+        activate
+    end tell
+
+    delay 1
+
+    tell application "System Events"
+        tell process "Terminal"
+            set frontmost to true
+            delay 0.3
+            keystroke userPrompt
+            delay 0.2
+            keystroke return
+        end tell
+    end tell
+
+    return "OK"
+end run
+'''
+
+
 async def prompt_existing_terminal(project_name: str, prompt: str) -> dict:
     """Find a Terminal window matching a project name and type a prompt into it.
 
     Uses System Events keystroke to type into an active Claude Code session
     rather than `do script` which would open a new shell.
+
+    SECURITY: ``project_name`` and ``prompt`` are passed via osascript argv;
+    they cannot break out of AppleScript string context. ``keystroke`` types
+    them as user input into whatever window is frontmost — which is
+    sensitive in its own right, but no longer a source-injection vector.
     """
-    escaped_name = project_name.replace('"', '\\"')
-    escaped_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
-
-    # Single atomic script: find window, focus it, type into it
-    script = f'''
-tell application "Terminal"
-    set matched to false
-    set targetWindow to missing value
-    repeat with w in windows
-        if name of w contains "{escaped_name}" then
-            set targetWindow to w
-            set matched to true
-            exit repeat
-        end if
-    end repeat
-
-    if not matched then
-        return "NOT_FOUND"
-    end if
-
-    -- Bring the matched window to front
-    set index of targetWindow to 1
-    set selected tab of targetWindow to selected tab of targetWindow
-    activate
-end tell
-
--- Wait for window to be fully focused
-delay 1
-
--- Now type into it
-tell application "System Events"
-    tell process "Terminal"
-        set frontmost to true
-        delay 0.3
-        keystroke "{escaped_prompt}"
-        delay 0.2
-        keystroke return
-    end tell
-end tell
-
-return "OK"
-'''
-
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        rc, stdout, stderr = await run_osascript(
+            _PROMPT_EXISTING_TERMINAL_SCRIPT,
+            [project_name, prompt],
+            timeout=15,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-
         result = stdout.decode().strip()
         if result == "NOT_FOUND":
             return {
@@ -255,7 +319,7 @@ return "OK"
                 "confirmation": f"Couldn't find a terminal for {project_name}, sir.",
             }
 
-        success = proc.returncode == 0
+        success = rc == 0
         if not success:
             log.error(f"prompt_existing_terminal failed: {stderr.decode()[:200]}")
 

@@ -28,19 +28,24 @@ _event_cache: list[dict] = []
 _cache_time: float = 0
 _calendar_launched = False
 
-# Per-calendar AppleScript: bulk property access (fast), no `whose` clause
+# Per-calendar AppleScript: bulk property access (fast), no `whose` clause.
+# ``cal_name`` is passed via osascript argv (item 1 of argv) so a quote
+# or newline in a calendar name can't break out of the script source.
 _BULK_SCRIPT = '''
-tell application "Calendar"
-    set cal to calendar "{cal_name}"
-    set dateList to start date of every event of cal
-    set summaryList to summary of every event of cal
-    set allDayList to allday event of every event of cal
-    set output to ""
-    repeat with i from 1 to count of dateList
-        set output to output & ((item i of dateList) as string) & "|||" & (item i of summaryList) & "|||" & (item i of allDayList) & linefeed
-    end repeat
-    return output
-end tell
+on run argv
+    set calName to item 1 of argv
+    tell application "Calendar"
+        set cal to calendar calName
+        set dateList to start date of every event of cal
+        set summaryList to summary of every event of cal
+        set allDayList to allday event of every event of cal
+        set output to ""
+        repeat with i from 1 to count of dateList
+            set output to output & ((item i of dateList) as string) & "|||" & (item i of summaryList) & "|||" & (item i of allDayList) & linefeed
+        end repeat
+        return output
+    end tell
+end run
 '''
 
 
@@ -65,10 +70,9 @@ async def _ensure_calendar_running():
 
 async def _fetch_calendar_events(cal_name: str, timeout: float = 12.0) -> list[dict]:
     """Fetch all events from one calendar, filter to today in Python."""
-    script = _BULK_SCRIPT.replace("{cal_name}", cal_name)
     try:
         proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
+            "osascript", "-e", _BULK_SCRIPT, "--", cal_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
