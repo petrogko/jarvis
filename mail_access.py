@@ -382,22 +382,31 @@ def format_unread_summary(unread: dict) -> str:
 
 
 def format_messages_for_context(messages: list[dict], label: str = "Recent emails") -> str:
-    """Format messages as context for the LLM."""
+    """Format messages as context for the LLM.
+
+    Sender names and subjects are attacker-controlled (anyone can email
+    you). Sanitize each field and wrap the whole block in an
+    <untrusted-mail> fence so the system prompt knows to treat it as
+    data, not instructions.
+    """
+    from untrusted_content import sanitize, wrap
+
     if not messages:
-        return f"{label}: None."
+        return wrap("mail", f"{label}: None.")
 
     lines = [f"{label}:"]
     for m in messages[:10]:
         read_marker = "" if m.get("read") else " [UNREAD]"
-        line = f"  - {m['sender']}: {m['subject']}{read_marker}"
+        sender = sanitize(m.get("sender", ""), max_len=120)
+        subject = sanitize(m.get("subject", ""), max_len=200)
+        line = f"  - {sender}: {subject}{read_marker}"
         if m.get("date"):
-            # Try to shorten the date
             date_str = m["date"]
             if " at " in date_str:
                 date_str = date_str.split(" at ")[0].split(", ", 1)[-1] if ", " in date_str else date_str
-            line += f" ({date_str})"
+            line += f" ({sanitize(date_str, max_len=60)})"
         lines.append(line)
-    return "\n".join(lines)
+    return wrap("mail", "\n".join(lines))
 
 
 def format_messages_for_voice(messages: list[dict]) -> str:
