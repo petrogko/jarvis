@@ -81,6 +81,28 @@ open http://localhost:5173
 
 Click the page once to enable audio, then speak. JARVIS will respond.
 
+## Networking & Security
+
+By default JARVIS binds to `127.0.0.1` and is reachable only from the
+same machine. See [SECURITY.md](SECURITY.md) for the trust model and the
+checklist before exposing JARVIS on a LAN.
+
+- **Loopback only by default.** `python server.py` listens on
+  `127.0.0.1:8340`. A browser on the same Mac connects with zero auth
+  friction.
+- **LAN access requires the token.** Run with `python server.py --host 0.0.0.0`
+  to bind on all interfaces. The server prints a token at startup and
+  persists it to `data/.local_token` (mode 0600, gitignored). Remote
+  clients must send `X-JARVIS-Token: <token>` on REST calls and
+  `?token=<token>` on the WebSocket URL.
+- **CORS allowlist.** Defaults to `http://localhost:5173` and
+  `http://127.0.0.1:5173`. Override with `JARVIS_CORS_ORIGINS=...`
+  (comma-separated).
+- **Self-modification is opt-in.** `/api/fix-self` spawns a Claude Code
+  session in the JARVIS repo with `--dangerously-skip-permissions`.
+  It's disabled by default. To enable it, start the server with
+  `JARVIS_ENABLE_FIX_SELF=1` and POST a body of `{"confirm": "rewrite-self"}`.
+
 ## Configuration
 
 Edit your `.env` file:
@@ -114,7 +136,7 @@ Microphone -> Web Speech API -> WebSocket -> FastAPI -> Claude (Haiku) -> Fish A
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | FastAPI + Python (`server.py`, ~2300 lines) |
+| Backend | FastAPI + Python (`server.py`, ~2600 lines) |
 | Frontend | Vite + TypeScript + Three.js |
 | Communication | WebSocket (JSON messages + binary audio) |
 | AI (fast) | Claude Haiku -- low-latency voice responses |

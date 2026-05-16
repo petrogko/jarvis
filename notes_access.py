@@ -11,11 +11,20 @@ import logging
 log = logging.getLogger("jarvis.notes")
 
 
-async def _run_notes_script(script: str, timeout: float = 10) -> str:
-    """Run an AppleScript against Notes.app."""
+async def _run_notes_script(script: str, timeout: float = 10, args: list[str] | None = None) -> str:
+    """Run an AppleScript against Notes.app.
+
+    SECURITY: Untrusted values MUST be supplied via ``args`` and read in
+    the script as ``item N of argv`` inside ``on run argv ... end run``.
+    Never interpolate caller-supplied strings into ``script``.
+    """
     try:
+        cmd = ["osascript", "-e", script]
+        if args:
+            cmd.append("--")
+            cmd.extend(str(a) for a in args)
         proc = await asyncio.create_subprocess_exec(
-            "osascript", "-e", script,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -67,25 +76,26 @@ end tell
 
 async def read_note(title_match: str) -> dict | None:
     """Read a note by title (partial match). Returns title + body."""
-    escaped = title_match.replace('"', '\\"')
-    script = f'''
-tell application "Notes"
-    set allNotes to every note
-    repeat with n in allNotes
-        if name of n contains "{escaped}" then
-            set nName to name of n
-            set nBody to plaintext of n
-            -- Truncate very long notes
-            if length of nBody > 3000 then
-                set nBody to text 1 thru 3000 of nBody
+    script = '''
+on run argv
+    set titleMatch to item 1 of argv
+    tell application "Notes"
+        set allNotes to every note
+        repeat with n in allNotes
+            if name of n contains titleMatch then
+                set nName to name of n
+                set nBody to plaintext of n
+                if length of nBody > 3000 then
+                    set nBody to text 1 thru 3000 of nBody
+                end if
+                return nName & "|||" & nBody
             end if
-            return nName & "|||" & nBody
-        end if
-    end repeat
-    return ""
-end tell
+        end repeat
+        return ""
+    end tell
+end run
 '''
-    raw = await _run_notes_script(script, timeout=10)
+    raw = await _run_notes_script(script, timeout=10, args=[title_match])
     if not raw or "|||" not in raw:
         return None
     title, _, body = raw.partition("|||")
@@ -94,23 +104,27 @@ end tell
 
 async def search_notes_apple(query: str, count: int = 5) -> list[dict]:
     """Search notes by title keyword."""
-    escaped = query.replace('"', '\\"')
+    # ``count`` is an int — safe to interpolate. ``query`` goes via argv.
+    count = int(count)
     script = f'''
-tell application "Notes"
-    set output to ""
-    set foundCount to 0
-    set allNotes to every note
-    repeat with n in allNotes
-        if foundCount >= {count} then exit repeat
-        if name of n contains "{escaped}" then
-            set output to output & name of n & "|||" & (creation date of n as string) & linefeed
-            set foundCount to foundCount + 1
-        end if
-    end repeat
-    return output
-end tell
+on run argv
+    set q to item 1 of argv
+    tell application "Notes"
+        set output to ""
+        set foundCount to 0
+        set allNotes to every note
+        repeat with n in allNotes
+            if foundCount >= {count} then exit repeat
+            if name of n contains q then
+                set output to output & name of n & "|||" & (creation date of n as string) & linefeed
+                set foundCount to foundCount + 1
+            end if
+        end repeat
+        return output
+    end tell
+end run
 '''
-    raw = await _run_notes_script(script, timeout=15)
+    raw = await _run_notes_script(script, timeout=15, args=[query])
     if not raw:
         return []
     notes = []
@@ -129,18 +143,20 @@ async def create_apple_note(title: str, body: str, folder: str = "Notes") -> boo
     # Convert markdown-style checklists to HTML
     html_body = _body_to_html(body)
 
-    escaped_title = title.replace('"', '\\"')
-    escaped_body = html_body.replace('"', '\\"')
-    escaped_folder = folder.replace('"', '\\"')
-    script = f'''
-tell application "Notes"
-    tell folder "{escaped_folder}"
-        make new note with properties {{name:"{escaped_title}", body:"{escaped_body}"}}
+    script = '''
+on run argv
+    set folderName to item 1 of argv
+    set noteTitle to item 2 of argv
+    set noteBody to item 3 of argv
+    tell application "Notes"
+        tell folder folderName
+            make new note with properties {name:noteTitle, body:noteBody}
+        end tell
+        return "OK"
     end tell
-    return "OK"
-end tell
+end run
 '''
-    result = await _run_notes_script(script, timeout=10)
+    result = await _run_notes_script(script, timeout=10, args=[folder, title, html_body])
     if result == "OK":
         log.info(f"Created Apple Note: {title}")
         return True

@@ -34,7 +34,7 @@ from typing import Optional
 
 import anthropic
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -52,6 +52,11 @@ from memory import (
 from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
+from auth import (
+    LocalTokenAuthMiddleware,
+    load_or_create_token,
+    websocket_authorized,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -1352,12 +1357,29 @@ async def lifespan(application: FastAPI):
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
 
+# Local auth token: generated on first start, persisted under data/.
+LOCAL_TOKEN = load_or_create_token()
+TRUST_LOOPBACK = os.getenv("JARVIS_TRUST_LOOPBACK", "1") not in ("0", "false", "False", "")
+
+# CORS — explicit allowlist only. The default frontend ships from this
+# same origin (FastAPI serves /assets/ and /); a vite dev server on
+# 5173 needs to be added explicitly here, not via "*".
+_default_cors = "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173,https://127.0.0.1:5173"
+_cors_origins = [o.strip() for o in os.getenv("JARVIS_CORS_ORIGINS", _default_cors).split(",") if o.strip()]
+
+# Middleware order: last-added wraps first. We want CORS to run
+# outermost so OPTIONS preflights answer correctly even before auth.
+app.add_middleware(
+    LocalTokenAuthMiddleware,
+    token=LOCAL_TOKEN,
+    trust_loopback=TRUST_LOOPBACK,
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["content-type", "x-jarvis-token"],
 )
 
 
@@ -1872,6 +1894,10 @@ async def voice_handler(ws: WebSocket):
         {"type": "task_spawned", "task_id": "...", "prompt": "..."}
         {"type": "task_complete", "task_id": "...", "summary": "..."}
     """
+    if not websocket_authorized(ws, LOCAL_TOKEN, trust_loopback=TRUST_LOOPBACK):
+        log.warning("ws: rejected upgrade from %s (no/bad token)", ws.client.host if ws.client else "?")
+        await ws.close(code=4401)
+        return
     await ws.accept()
     task_manager.register_websocket(ws)
     history: list[dict] = []
@@ -2512,18 +2538,46 @@ async def api_restart():
     log.info("Restart requested — shutting down in 2 seconds")
     async def _restart():
         await asyncio.sleep(2)
-        cmd = [sys.executable, __file__, "--port", "8340", "--host", "0.0.0.0"]
+        # Re-exec preserving the host the operator originally chose. We
+        # default to loopback; LAN exposure requires explicit opt-in.
+        restart_host = os.getenv("JARVIS_RESTART_HOST", "127.0.0.1")
+        cmd = [sys.executable, __file__, "--port", "8340", "--host", restart_host]
         os.execv(sys.executable, cmd)
     asyncio.create_task(_restart())
     return {"status": "restarting"}
 
 
+class FixSelfBody(BaseModel):
+    confirm: str = ""
+
+
 @app.post("/api/fix-self")
-async def api_fix_self():
-    """Enter work mode in the JARVIS repo — JARVIS can now fix himself."""
+async def api_fix_self(body: FixSelfBody, request: Request):
+    """
+    Open a Claude Code session in the JARVIS repo with skip-permissions.
+
+    Highest-blast-radius endpoint in this server: it spawns a shell with
+    full filesystem + tool access as the current user. Triple-gated:
+      1. The auth middleware already blocks non-loopback unauthenticated callers.
+      2. JARVIS_ENABLE_FIX_SELF=1 must be set in the server's env.
+      3. The request body must contain {"confirm": "rewrite-self"}.
+    """
+    if os.getenv("JARVIS_ENABLE_FIX_SELF", "0") not in ("1", "true", "True"):
+        return JSONResponse(
+            {"error": "fix-self disabled", "detail": "set JARVIS_ENABLE_FIX_SELF=1 to enable"},
+            status_code=403,
+        )
+    if body.confirm != "rewrite-self":
+        return JSONResponse(
+            {"error": "confirmation required", "detail": "POST body must include {\"confirm\": \"rewrite-self\"}"},
+            status_code=400,
+        )
+    caller = request.client.host if request.client else "?"
+    log.warning("fix-self INVOKED by %s — opening Claude Code in repo", caller)
+
     jarvis_dir = str(Path(__file__).parent)
-    # The work_session is per-WebSocket, so we set a flag that the handler picks up
-    # For now, also open Terminal so user can see
+    # jarvis_dir is derived from __file__, not user input — safe to interpolate.
+    # If you ever change this, route through an AppleScript argv-passing helper instead.
     script = (
         'tell application "Terminal"\n'
         '    activate\n'
@@ -2535,7 +2589,6 @@ async def api_fix_self():
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    log.info("Work mode: JARVIS repo opened for self-improvement")
     return {"status": "work_mode_active", "path": jarvis_dir}
 
 
@@ -2565,7 +2618,12 @@ if __name__ == "__main__":
     import uvicorn
 
     parser = argparse.ArgumentParser(description="JARVIS Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind host (default: 127.0.0.1, loopback only). "
+             "Use 0.0.0.0 to expose on LAN — clients then need X-JARVIS-Token.",
+    )
     parser.add_argument("--port", type=int, default=8340, help="Bind port")
     parser.add_argument("--reload", action="store_true", help="Auto-reload on changes")
     parser.add_argument("--ssl", action="store_true", help="Enable HTTPS with key.pem/cert.pem")
@@ -2584,6 +2642,11 @@ if __name__ == "__main__":
     print(f"  WebSocket: {ws_proto}://{args.host}:{args.port}/ws/voice")
     print(f"  REST API:  {proto}://{args.host}:{args.port}/api/")
     print(f"  Tasks:     {proto}://{args.host}:{args.port}/api/tasks")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print()
+        print("  ⚠  Listening on a non-loopback interface.")
+        print(f"  ⚠  LAN clients must send  X-JARVIS-Token: {LOCAL_TOKEN}")
+        print( "  ⚠  (or  ?token=...  on the WebSocket URL).")
     print()
 
     ssl_kwargs = {}
