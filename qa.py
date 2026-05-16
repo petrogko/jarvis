@@ -45,20 +45,22 @@ class QAAgent:
         )
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                "claude", "-p",
-                "--output-format", "text",
-                "--dangerously-skip-permissions",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-            )
+            import claude_pool
+            async with claude_pool.acquire():
+                process = await asyncio.create_subprocess_exec(
+                    "claude", "-p",
+                    "--output-format", "text",
+                    "--dangerously-skip-permissions",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=working_dir,
+                )
 
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=qa_prompt.encode()),
-                timeout=120.0,
-            )
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(input=qa_prompt.encode()),
+                    timeout=120.0,
+                )
 
             raw = stdout.decode().strip()
 
@@ -133,20 +135,22 @@ class QAAgent:
         )
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                "claude", "-p",
-                "--output-format", "text",
-                "--dangerously-skip-permissions",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-            )
+            import claude_pool
+            async with claude_pool.acquire():
+                process = await asyncio.create_subprocess_exec(
+                    "claude", "-p",
+                    "--output-format", "text",
+                    "--dangerously-skip-permissions",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=working_dir,
+                )
 
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=retry_prompt.encode()),
-                timeout=300.0,
-            )
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(input=retry_prompt.encode()),
+                    timeout=300.0,
+                )
 
             if process.returncode == 0:
                 result = stdout.decode().strip()
