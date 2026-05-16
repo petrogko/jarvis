@@ -57,6 +57,8 @@ from auth import (
     load_or_create_token,
     websocket_authorized,
 )
+from file_perms import harden_secrets_at_startup
+import claude_pool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -358,12 +360,16 @@ class ClaudeTaskManager:
             self._websockets.remove(ws)
 
     async def spawn(self, prompt: str, working_dir: str = ".") -> str:
-        """Spawn a claude -p subprocess. Returns task_id. Non-blocking."""
-        active = await self.get_active_count()
-        if active >= self._max_concurrent:
+        """Spawn a claude -p subprocess. Returns task_id. Non-blocking.
+
+        Concurrency is bounded by the global ``claude_pool``. We acquire
+        a slot immediately and release it when ``_run_task`` finishes.
+        """
+        got_slot = await claude_pool.acquire_immediate()
+        if not got_slot:
             raise RuntimeError(
-                f"Max concurrent tasks ({self._max_concurrent}) reached. "
-                f"Wait for a task to complete or cancel one."
+                f"Max concurrent Claude tasks ({claude_pool.capacity()}) reached. "
+                f"Wait for one to complete or cancel one."
             )
 
         task_id = str(uuid.uuid4())[:8]
@@ -399,75 +405,80 @@ class ClaudeTaskManager:
         return name
 
     async def _run_task(self, task: ClaudeTask):
-        """Open a Terminal window and run claude code visibly."""
-        task.status = "running"
-        task.started_at = datetime.now()
+        """Open a Terminal window and run claude code visibly.
 
-        # Create project directory if it doesn't exist
-        work_dir = task.working_dir
-        if work_dir == "." or not work_dir:
-            # Create a new project folder on Desktop
-            project_name = self._generate_project_name(task.prompt)
-            work_dir = str(Path.home() / "Desktop" / project_name)
-            os.makedirs(work_dir, exist_ok=True)
-            task.working_dir = work_dir
-
-        # Write the prompt to a temp file so we can pipe it to claude
-        prompt_file = Path(work_dir) / ".jarvis_prompt.md"
-        prompt_file.write_text(task.prompt)
-
-        # Open Terminal.app with claude running in the project directory
-        applescript = f'''
-        tell application "Terminal"
-            activate
-            set newTab to do script "cd {work_dir} && cat .jarvis_prompt.md | claude -p --dangerously-skip-permissions | tee .jarvis_output.txt; echo '\\n--- JARVIS TASK COMPLETE ---'"
-        end tell
-        '''
-
-        process = await asyncio.create_subprocess_exec(
-            "osascript", "-e", applescript,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.communicate()
-        task.pid = process.pid
-
-        # Monitor the output file for completion
-        output_file = Path(work_dir) / ".jarvis_output.txt"
-        start = time.time()
-        timeout = 600  # 10 minutes
-
-        while time.time() - start < timeout:
-            await asyncio.sleep(5)
-            if output_file.exists():
-                content = output_file.read_text()
-                if "--- JARVIS TASK COMPLETE ---" in content or len(content) > 100:
-                    task.result = content.replace("--- JARVIS TASK COMPLETE ---", "").strip()
-                    task.status = "completed"
-                    break
-        else:
-            task.status = "timed_out"
-            task.error = f"Task timed out after {timeout}s"
-
-        task.completed_at = datetime.now()
-
-        # Notify via WebSocket
-        await self._notify({
-            "type": "task_complete",
-            "task_id": task.id,
-            "status": task.status,
-            "summary": task.result[:200] if task.result else task.error,
-        })
-
-        # Clean up prompt file
+        The global claude_pool slot was acquired in ``spawn()``; we
+        release it here regardless of how the task ends.
+        """
         try:
-            prompt_file.unlink()
-        except:
-            pass
+            task.status = "running"
+            task.started_at = datetime.now()
 
-        # Auto-QA on completed tasks
-        if task.status == "completed":
-            asyncio.create_task(self._run_qa(task))
+            # Create project directory if it doesn't exist
+            work_dir = task.working_dir
+            if work_dir == "." or not work_dir:
+                project_name = self._generate_project_name(task.prompt)
+                work_dir = str(Path.home() / "Desktop" / project_name)
+                os.makedirs(work_dir, exist_ok=True)
+                task.working_dir = work_dir
+
+            # Write the prompt to a temp file so we can pipe it to claude
+            prompt_file = Path(work_dir) / ".jarvis_prompt.md"
+            prompt_file.write_text(task.prompt)
+
+            # work_dir is Desktop/<kebab-name> where the name comes from
+            # ``_generate_project_name`` (alnum + dashes only). Safe to
+            # interpolate. If you change the source of work_dir, route
+            # through actions.run_osascript with argv-passing instead.
+            applescript = f'''
+            tell application "Terminal"
+                activate
+                set newTab to do script "cd {work_dir} && cat .jarvis_prompt.md | claude -p --dangerously-skip-permissions | tee .jarvis_output.txt; echo '\\n--- JARVIS TASK COMPLETE ---'"
+            end tell
+            '''
+
+            process = await asyncio.create_subprocess_exec(
+                "osascript", "-e", applescript,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await process.communicate()
+            task.pid = process.pid
+
+            output_file = Path(work_dir) / ".jarvis_output.txt"
+            start = time.time()
+            timeout = 600  # 10 minutes
+
+            while time.time() - start < timeout:
+                await asyncio.sleep(5)
+                if output_file.exists():
+                    content = output_file.read_text()
+                    if "--- JARVIS TASK COMPLETE ---" in content or len(content) > 100:
+                        task.result = content.replace("--- JARVIS TASK COMPLETE ---", "").strip()
+                        task.status = "completed"
+                        break
+            else:
+                task.status = "timed_out"
+                task.error = f"Task timed out after {timeout}s"
+
+            task.completed_at = datetime.now()
+
+            await self._notify({
+                "type": "task_complete",
+                "task_id": task.id,
+                "status": task.status,
+                "summary": task.result[:200] if task.result else task.error,
+            })
+
+            try:
+                prompt_file.unlink()
+            except Exception:
+                pass
+
+            if task.status == "completed":
+                asyncio.create_task(self._run_qa(task))
+        finally:
+            await claude_pool.release()
 
     async def _run_qa(self, task: ClaudeTask, attempt: int = 1):
         """Run QA verification on a completed task, auto-retry on failure."""
@@ -878,20 +889,22 @@ async def _execute_research(target: str, ws=None):
             f"The working directory is: {path}"
         )
 
-        log.info(f"Research started via claude -p in {path}")
+        log.info(f"Research queued via claude -p in {path}")
 
-        process = await asyncio.create_subprocess_exec(
-            "claude", "-p", "--output-format", "text", "--dangerously-skip-permissions",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=path,
-        )
+        async with claude_pool.acquire():
+            log.info(f"Research started via claude -p in {path}")
+            process = await asyncio.create_subprocess_exec(
+                "claude", "-p", "--output-format", "text", "--dangerously-skip-permissions",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=path,
+            )
 
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(input=prompt.encode()),
-            timeout=300,
-        )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(input=prompt.encode()),
+                timeout=300,
+            )
 
         result = stdout.decode().strip()
         log.info(f"Research complete ({len(result)} chars)")
@@ -1454,6 +1467,10 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
+
+# Tighten on-disk permissions on every sensitive path before we hand
+# any secret to a downstream consumer. Best-effort, never raises.
+harden_secrets_at_startup()
 
 # Local auth token: generated on first start, persisted under data/.
 LOCAL_TOKEN = load_or_create_token()
