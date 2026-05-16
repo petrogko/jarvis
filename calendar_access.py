@@ -229,21 +229,28 @@ async def get_calendar_names() -> list[str]:
 
 
 def format_events_for_context(events: list[dict]) -> str:
-    """Format events as context for the LLM."""
+    """Format events as context for the LLM.
+
+    Calendar titles can be set by anyone who has share/invite access;
+    treat as untrusted data, not instructions.
+    """
+    from untrusted_content import sanitize, wrap
+
     if not events:
-        return "No events scheduled today."
+        return wrap("calendar", "No events scheduled today.")
 
     lines = []
     for evt in events:
+        title = sanitize(evt.get("title", ""), max_len=200)
         if evt.get("all_day"):
-            entry = f"  All day — {evt['title']}"
+            entry = f"  All day — {title}"
         else:
-            entry = f"  {evt['start']} — {evt['title']}"
+            entry = f"  {sanitize(str(evt.get('start', '')), max_len=30)} — {title}"
         if evt.get("calendar"):
-            entry += f" [{evt['calendar']}]"
+            entry += f" [{sanitize(evt['calendar'], max_len=60)}]"
         lines.append(entry)
 
-    return "\n".join(lines)
+    return wrap("calendar", "\n".join(lines))
 
 
 def format_schedule_summary(events: list[dict]) -> str:

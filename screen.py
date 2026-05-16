@@ -239,11 +239,19 @@ async def describe_screen(anthropic_client) -> str:
 
 
 def format_windows_for_context(windows: list[dict]) -> str:
-    """Format window list as context string for the LLM."""
+    """Format window list as context string for the LLM.
+
+    Window titles are set by whatever website / app is in front;
+    treat as untrusted data, not instructions.
+    """
+    from untrusted_content import sanitize, wrap
+
     if not windows:
         return ""
     lines = ["Currently open on your desktop:"]
     for w in windows:
         marker = " (active)" if w["frontmost"] else ""
-        lines.append(f"  - {w['app']}: {w['title']}{marker}")
-    return "\n".join(lines)
+        app = sanitize(w.get("app", ""), max_len=60)
+        title = sanitize(w.get("title", ""), max_len=200)
+        lines.append(f"  - {app}: {title}{marker}")
+    return wrap("screen", "\n".join(lines))
