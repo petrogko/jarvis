@@ -78,18 +78,20 @@ class WorkSession:
         self._status = "working"
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._working_dir,
-            )
+            import claude_pool
+            async with claude_pool.acquire():
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._working_dir,
+                )
 
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=user_text.encode()),
-                timeout=300,
-            )
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(input=user_text.encode()),
+                    timeout=300,
+                )
 
             response = stdout.decode().strip()
             self._message_count += 1
