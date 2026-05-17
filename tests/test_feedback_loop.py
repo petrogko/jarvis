@@ -99,8 +99,14 @@ async def test_max_retries_enforced():
 
 
 @pytest.mark.asyncio
-async def test_retry_below_max_attempts():
+async def test_retry_below_max_attempts(monkeypatch):
     """Auto-retry attempts execution when below max retries."""
+    # cwd_allowlist (added in PR #6) blocks spawns outside ~/Desktop /
+    # the JARVIS repo by default. The mock here uses /tmp; extend the
+    # allowlist for the duration of this test instead of relaxing the
+    # production guard.
+    monkeypatch.setenv("JARVIS_EXTRA_PROJECT_DIRS", "/tmp")
+
     qa = QAAgent()
 
     # Mock subprocess to simulate successful retry
