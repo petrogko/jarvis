@@ -78,6 +78,26 @@ class WorkSession:
         self._status = "working"
 
         try:
+            from cwd_allowlist import assert_allowed_cwd
+            try:
+                assert_allowed_cwd(self._working_dir, label="work_mode_cwd")
+            except ValueError as e:
+                self._status = "error"
+                log.warning("work_mode: refusing to spawn — %s", e)
+                try:
+                    import audit_log
+                    audit_log.record(
+                        action="work_mode_send",
+                        target=str(self._working_dir),
+                        user_text=user_text,
+                        success=False,
+                        source="cwd-reject",
+                        reason=str(e),
+                    )
+                except Exception:
+                    pass
+                return "I can't operate in that directory, sir — it's outside the allowed roots."
+
             import claude_pool
             async with claude_pool.acquire():
                 process = await asyncio.create_subprocess_exec(
