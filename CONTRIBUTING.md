@@ -22,12 +22,37 @@ Thanks for your interest in contributing! Here's how to get involved.
 
 ## Code Style
 
-Yes, `server.py` is a 2400-line monolith. It works. If you want to refactor parts into modules, that's welcome — just make sure nothing breaks.
+Yes, `server.py` is a 2600-line monolith. It works. If you want to refactor parts into modules, that's welcome — just make sure nothing breaks.
 
 - Keep voice responses short (1-2 sentences max)
 - Don't add dependencies unless necessary
 - Test your changes by actually talking to JARVIS
 - Keep the personality consistent — British butler, dry wit, economy of language
+
+## Running Tests and the Security Audit
+
+Two checks run on every PR via GitHub Actions (see `.github/workflows/ci.yml`).
+Reproduce locally before pushing:
+
+```bash
+# Install dev + runtime deps into a fresh venv
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+# Unit tests (hermetic, no API keys required)
+pytest -q
+
+# CVE scan of the pinned dependencies
+pip-audit -r requirements.txt --strict
+```
+
+`pyproject.toml` excludes three integration tests
+(`test_browser_integration`, `test_classifier`, `test_e2e_pipeline`)
+that hit external APIs. Run them explicitly when you need to:
+
+```bash
+pytest tests/test_classifier.py
+```
 
 ## What NOT to Do
 

@@ -776,23 +776,32 @@ _ACTION_MAX_TARGET_LEN = 2000
 _PROJECT_NAME_BAD_RE = _action_re.compile(r"[\x00-\x1f\x7f`$;&|<>\"'\\]")
 
 
+_SCHEME_PROBE = _action_re.compile(r"^([a-z][a-z0-9+.-]*):", flags=_action_re.IGNORECASE)
+
+
 def _is_browse_target_safe(target: str) -> bool:
     """A BROWSE target is either a search string (no scheme) or http(s)://.
 
-    Block file://, data:, javascript:, ftp:// and other schemes; these
-    are common prompt-injection payloads to read local files or open
-    code-execution sinks.
+    Block ``file://``, ``data:``, ``javascript:``, ``ftp:``, ``jar:`` and
+    any other scheme. Per RFC 3986 the URI grammar is ``scheme:hier-part``
+    where ``//authority`` is OPTIONAL — so ``javascript:alert(1)`` is a
+    valid URI with scheme ``javascript`` even though it has no ``//``.
+    An earlier version of this check looked for ``scheme://`` literally
+    and silently accepted ``javascript:`` payloads; CI caught it.
     """
     if not target:
         return False
-    if not _action_re.match(r"^[a-z][a-z0-9+.-]*://", target.lower()):
-        # No scheme — treat as search query, safe.
+    match = _SCHEME_PROBE.match(target)
+    if not match:
+        # No scheme — treat as plain search-query text.
         return True
+    if match.group(1).lower() not in ("http", "https"):
+        return False
     try:
         parsed = _urlparse(target)
     except ValueError:
         return False
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
 
 
 def _looks_like_safe_project_name(name: str) -> bool:
