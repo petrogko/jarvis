@@ -59,6 +59,7 @@ from auth import (
 )
 from file_perms import harden_secrets_at_startup
 import claude_pool
+import audit_log
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -859,6 +860,13 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     clean_text = response[:match.start()].strip()
     if not ok:
         log.warning("dropping action %s: %s (target=%r)", action["action"], reason, action["target"][:120])
+        audit_log.record(
+            action=action["action"],
+            target=action["target"],
+            success=False,
+            source="validator-reject",
+            reason=reason,
+        )
         return clean_text, None
     return clean_text, action
 
@@ -1557,8 +1565,24 @@ async def api_get_task(task_id: str):
 async def api_create_task(req: TaskRequest):
     try:
         task_id = await task_manager.spawn(req.prompt, req.working_dir)
+        audit_log.record(
+            action="api_tasks_spawn",
+            target=req.working_dir,
+            user_text=req.prompt,
+            success=True,
+            source="api-task",
+            reason=f"task_id={task_id}",
+        )
         return {"task_id": task_id, "status": "spawned"}
     except RuntimeError as e:
+        audit_log.record(
+            action="api_tasks_spawn",
+            target=req.working_dir,
+            user_text=req.prompt,
+            success=False,
+            source="api-task",
+            reason=str(e),
+        )
         return JSONResponse(status_code=429, content={"error": str(e)})
 
 
@@ -2310,6 +2334,16 @@ async def voice_handler(ws: WebSocket):
                             clean_response, embedded_action = extract_action(response_text)
                             if embedded_action:
                                 log.info(f"LLM embedded action: {embedded_action}")
+                                # Audit log: every action that reaches dispatch is recorded
+                                # (even if execution later fails). Forensics path for any
+                                # injection that slips past the validator.
+                                audit_log.record(
+                                    action=embedded_action["action"],
+                                    target=embedded_action.get("target", ""),
+                                    user_text=user_text,
+                                    success=True,
+                                    source="llm-action",
+                                )
                                 response_text = clean_response
                                 # Ensure there's always something to speak
                                 if not response_text.strip():

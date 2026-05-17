@@ -19,6 +19,8 @@ data/*.jsonl
 data/active_session.json
 data/.jarvis_output.txt
 data/.local_token
+data/audit.jsonl
+data/audit.jsonl.*.gz
 
 # Certificates
 *.pem
