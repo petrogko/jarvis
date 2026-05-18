@@ -45,6 +45,17 @@ class QAAgent:
         )
 
         try:
+            from cwd_allowlist import assert_allowed_cwd
+            try:
+                assert_allowed_cwd(working_dir, label="qa_verify_cwd")
+            except ValueError as e:
+                log.warning("QA verify: refusing to spawn — %s", e)
+                return QAResult(
+                    passed=True,
+                    issues=[f"QA skipped — cwd outside allowlist: {e}"],
+                    summary="QA skipped — cwd allowlist",
+                )
+
             import claude_pool
             async with claude_pool.acquire():
                 process = await asyncio.create_subprocess_exec(
@@ -135,6 +146,18 @@ class QAAgent:
         )
 
         try:
+            from cwd_allowlist import assert_allowed_cwd
+            try:
+                assert_allowed_cwd(working_dir, label="qa_retry_cwd")
+            except ValueError as e:
+                log.warning("QA retry: refusing to spawn — %s", e)
+                return {
+                    "status": "failed",
+                    "result": "",
+                    "error": f"cwd outside allowlist: {e}",
+                    "attempt": attempt + 1,
+                }
+
             import claude_pool
             async with claude_pool.acquire():
                 process = await asyncio.create_subprocess_exec(

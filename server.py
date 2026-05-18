@@ -60,6 +60,7 @@ from auth import (
 from file_perms import harden_secrets_at_startup
 import claude_pool
 import audit_log
+from cwd_allowlist import assert_allowed_cwd
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -422,6 +423,24 @@ class ClaudeTaskManager:
                 work_dir = str(Path.home() / "Desktop" / project_name)
                 os.makedirs(work_dir, exist_ok=True)
                 task.working_dir = work_dir
+
+            # Refuse to launch outside the cwd allowlist.
+            try:
+                assert_allowed_cwd(work_dir, label="task_cwd")
+            except ValueError as e:
+                task.status = "failed"
+                task.error = str(e)
+                task.completed_at = datetime.now()
+                audit_log.record(
+                    action="api_tasks_spawn",
+                    target=work_dir,
+                    user_text=task.prompt,
+                    success=False,
+                    source="cwd-reject",
+                    reason=str(e),
+                )
+                log.warning("refusing to spawn task — %s", e)
+                return
 
             # Write the prompt to a temp file so we can pipe it to claude
             prompt_file = Path(work_dir) / ".jarvis_prompt.md"
@@ -905,6 +924,20 @@ async def _execute_research(target: str, ws=None):
             f"Dark theme, clean typography, organized sections, real links and sources.\n"
             f"The working directory is: {path}"
         )
+
+        try:
+            assert_allowed_cwd(path, label="research_cwd")
+        except ValueError as e:
+            audit_log.record(
+                action="research",
+                target=path,
+                user_text=target,
+                success=False,
+                source="cwd-reject",
+                reason=str(e),
+            )
+            log.warning("refusing to spawn research — %s", e)
+            return
 
         log.info(f"Research queued via claude -p in {path}")
 
