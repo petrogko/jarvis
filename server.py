@@ -61,6 +61,7 @@ from file_perms import harden_secrets_at_startup
 import claude_pool
 import audit_log
 from cwd_allowlist import assert_allowed_cwd
+import claude_runner
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -939,20 +940,13 @@ async def _execute_research(target: str, ws=None):
             log.warning("refusing to spawn research — %s", e)
             return
 
-        log.info(f"Research queued via claude -p in {path}")
+        log.info(f"Research queued via claude_runner ({claude_runner.BACKEND}) in {path}")
 
         async with claude_pool.acquire():
-            log.info(f"Research started via claude -p in {path}")
-            process = await asyncio.create_subprocess_exec(
-                "claude", "-p", "--output-format", "text", "--dangerously-skip-permissions",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            log.info(f"Research started via claude_runner ({claude_runner.BACKEND}) in {path}")
+            rc, stdout, stderr = await claude_runner.run(
+                prompt=prompt.encode(),
                 cwd=path,
-            )
-
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input=prompt.encode()),
                 timeout=300,
             )
 

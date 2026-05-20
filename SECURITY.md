@@ -41,6 +41,43 @@ disabled by default; opting in requires presenting an auth token.
 - Compromise of Apple Calendar/Mail/Notes themselves — read paths are
   read-only by design; write paths are limited to Notes creation.
 
+## Subprocess sandboxing — `claude -p`
+
+Five sites in the codebase launch `claude -p --dangerously-skip-permissions`:
+research, work-mode, QA verify, QA auto-retry, and the visible
+Terminal task spawned by `POST /api/tasks`. Each spawn is gated by:
+
+1. `claude_pool` — global semaphore caps concurrent processes (env
+   `JARVIS_MAX_CONCURRENT_CLAUDE`, default 5).
+2. `cwd_allowlist` — resolved cwd must be inside `~/Desktop`, the
+   JARVIS repo, or a path listed in `JARVIS_EXTRA_PROJECT_DIRS`.
+3. `audit_log` — every spawn (success, cwd-reject, validator-reject)
+   is appended to `data/audit.jsonl`.
+
+For the four background sites a fourth layer is available: each
+spawn can run inside an ephemeral Docker container instead of
+directly on the host. Set `JARVIS_CLAUDE_RUNNER=docker` after
+building the image:
+
+```
+docker build -t jarvis-claude:latest docker/claude
+JARVIS_CLAUDE_RUNNER=docker python server.py
+```
+
+The container has only the project directory mounted (`-v
+${cwd}:/work:rw`), 2 GiB memory cap, 1 CPU, non-root user inside,
+and `--rm` (no persistent state between spawns). Auth is via the
+host's `ANTHROPIC_API_KEY` env var passed through (`-e
+ANTHROPIC_API_KEY`); your Claude Code subscription login is never
+mounted into the container. Trade-off: ~1–2 sec startup per spawn,
+and Claude Code Pro features that depend on the local session are
+unavailable inside the sandbox.
+
+The fifth site (`POST /api/tasks` → visible Terminal window) stays
+on `direct` regardless, because the UX is a Terminal window the
+user watches — Docker can't render that. The `cwd_allowlist` is
+the only sandbox for that site.
+
 ## AppleScript injection
 All AppleScript invocations that interpolate runtime values pass those
 values via `osascript` argv (`item N of argv` inside `on run argv`),

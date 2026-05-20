@@ -57,19 +57,11 @@ class QAAgent:
                 )
 
             import claude_pool
+            import claude_runner
             async with claude_pool.acquire():
-                process = await asyncio.create_subprocess_exec(
-                    "claude", "-p",
-                    "--output-format", "text",
-                    "--dangerously-skip-permissions",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                rc, stdout, stderr = await claude_runner.run(
+                    prompt=qa_prompt.encode(),
                     cwd=working_dir,
-                )
-
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(input=qa_prompt.encode()),
                     timeout=120.0,
                 )
 
@@ -159,21 +151,19 @@ class QAAgent:
                 }
 
             import claude_pool
+            import claude_runner
             async with claude_pool.acquire():
-                process = await asyncio.create_subprocess_exec(
-                    "claude", "-p",
-                    "--output-format", "text",
-                    "--dangerously-skip-permissions",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                rc, stdout, stderr = await claude_runner.run(
+                    prompt=retry_prompt.encode(),
                     cwd=working_dir,
-                )
-
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(input=retry_prompt.encode()),
                     timeout=300.0,
                 )
+
+            # Synthesize a process-like object so the existing branching
+            # below (which inspects ``process.returncode``) keeps working.
+            class _Proc:
+                returncode = rc
+            process = _Proc()
 
             if process.returncode == 0:
                 result = stdout.decode().strip()

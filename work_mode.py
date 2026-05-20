@@ -61,19 +61,19 @@ class WorkSession:
         First message in a session: fresh claude -p
         Subsequent messages: claude -p --continue (resumes last session in dir)
         """
-        claude_path = shutil.which("claude")
-        if not claude_path:
+        # claude-availability check: direct backend needs the host binary;
+        # docker backend needs the docker CLI. The runner handles fallback.
+        import claude_runner
+        if claude_runner.BACKEND == "direct" and not shutil.which("claude"):
             return "Claude CLI not found on this system."
 
-        cmd = [
-            claude_path, "-p",
-            "--output-format", "text",
-            "--dangerously-skip-permissions",
-        ]
-
-        # Use --continue for subsequent messages to maintain context
+        extra_flags: list[str] = []
         if self._message_count > 0:
-            cmd.append("--continue")
+            # --continue resumes the last session in cwd. Container backend
+            # has no persistent session state (each run is ephemeral), so
+            # --continue is a no-op there. We still pass it through so a
+            # later upgrade to a persistent-container model "just works".
+            extra_flags.append("--continue")
 
         self._status = "working"
 
@@ -100,18 +100,17 @@ class WorkSession:
 
             import claude_pool
             async with claude_pool.acquire():
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                rc, stdout, stderr = await claude_runner.run(
+                    prompt=user_text.encode(),
                     cwd=self._working_dir,
-                )
-
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(input=user_text.encode()),
                     timeout=300,
+                    extra_flags=extra_flags,
                 )
+            # Synthesize a minimal process-like object so the existing
+            # ``process.returncode`` branching below keeps working.
+            class _Proc:
+                returncode = rc
+            process = _Proc()
 
             response = stdout.decode().strip()
             self._message_count += 1
