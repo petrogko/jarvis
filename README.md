@@ -102,6 +102,13 @@ checklist before exposing JARVIS on a LAN.
   session in the JARVIS repo with `--dangerously-skip-permissions`.
   It's disabled by default. To enable it, start the server with
   `JARVIS_ENABLE_FIX_SELF=1` and POST a body of `{"confirm": "rewrite-self"}`.
+- **Sandbox `claude -p` (optional).** Build the sandbox image once
+  (`docker build -t jarvis-claude:latest docker/claude`) and start
+  with `JARVIS_CLAUDE_RUNNER=docker`. Each background `claude -p`
+  spawn then runs in an ephemeral container with only the project
+  directory mounted, 2 GiB / 1 CPU caps, and `ANTHROPIC_API_KEY`-only
+  auth. See [SECURITY.md](SECURITY.md#subprocess-sandboxing--claude--p)
+  for the trade-offs.
 
 ## Configuration
 
