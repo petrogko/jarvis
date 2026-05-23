@@ -93,3 +93,84 @@ def test_settings_json_is_valid():
     assert any("membrane-edit-warn.sh" in (c or "") for c in commands), (
         f"membrane-edit-warn.sh not wired; got commands={commands}"
     )
+
+
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)\Z", flags=re.DOTALL)
+
+REQUIRED_AGENT_FIELDS = ("name", "description", "model")
+
+
+def _parse_agent_file(path: pathlib.Path) -> tuple[dict, str]:
+    """Return (frontmatter_dict, body_text) for an agent .md file.
+
+    Parses YAML-ish frontmatter as ``key: value`` pairs without
+    importing PyYAML — the agent files use a strict, small subset.
+    """
+    text = path.read_text(encoding="utf-8")
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        raise AssertionError(f"{path}: no YAML frontmatter found")
+    raw, body = match.group(1), match.group(2)
+    front: dict[str, str] = {}
+    for line in raw.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, val = line.partition(":")
+        if not sep:
+            continue
+        front[key.strip()] = val.strip()
+    return front, body
+
+
+def _assert_persona_file_valid(name: str) -> None:
+    path = AGENTS_DIR / f"{name}.md"
+    assert path.exists(), f"missing {path}"
+    front, body = _parse_agent_file(path)
+    for field in REQUIRED_AGENT_FIELDS:
+        assert field in front, f"{path}: missing required field {field!r}"
+    assert front["name"] == name, f"{path}: name field must be {name!r}, got {front['name']!r}"
+    assert front["model"] in ("opus", "sonnet", "haiku"), (
+        f"{path}: model must be opus|sonnet|haiku, got {front['model']!r}"
+    )
+    assert len(body.strip()) >= 200, (
+        f"{path}: body suspiciously short ({len(body.strip())} chars); a real system prompt"
+        " should describe the persona's scope, output format, and constraints"
+    )
+
+
+def test_security_advisor_file_valid():
+    _assert_persona_file_valid("security-advisor")
+
+
+def test_software_architect_file_valid():
+    _assert_persona_file_valid("software-architect")
+
+
+def test_code_reviewer_file_valid():
+    _assert_persona_file_valid("code-reviewer")
+
+
+def test_test_runner_file_valid():
+    _assert_persona_file_valid("test-runner")
+
+
+def test_controller_file_valid():
+    _assert_persona_file_valid("controller")
+
+
+def test_controller_has_agent_tool():
+    front, _ = _parse_agent_file(AGENTS_DIR / "controller.md")
+    tools = front.get("tools", "")
+    assert "Agent" in tools, (
+        f"controller must have Agent tool to dispatch personas; got tools={tools!r}"
+    )
+
+
+def test_other_personas_do_not_have_agent_tool():
+    # Only the controller dispatches. Other personas are leaves.
+    for name in ("security-advisor", "software-architect", "code-reviewer", "test-runner"):
+        front, _ = _parse_agent_file(AGENTS_DIR / f"{name}.md")
+        tools = front.get("tools", "")
+        assert "Agent" not in tools, (
+            f"{name} must NOT have Agent tool (only controller dispatches); got tools={tools!r}"
+        )
