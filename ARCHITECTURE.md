@@ -78,3 +78,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
 
 If you change any boundary above (especially #1, #4, or #5), update
 this file in the same PR.
+
+## Persona Routing
+
+See the Persona Routing section in `CLAUDE.md` and the design at `docs/superpowers/specs/2026-05-21-personas-design.md`. Personas are dev-session-layer review tools; they do not run in JARVIS's voice loop.

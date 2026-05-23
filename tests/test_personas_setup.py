@@ -166,6 +166,22 @@ def test_controller_has_agent_tool():
     )
 
 
+def test_claude_md_has_persona_routing_section():
+    text = (ROOT / "CLAUDE.md").read_text()
+    assert "## Persona Routing" in text, "CLAUDE.md missing '## Persona Routing' section"
+    for name in PERSONAS:
+        assert name in text, f"CLAUDE.md routing section does not mention {name}"
+    for name in MEMBRANE_FILES:
+        assert name in text, f"CLAUDE.md routing section does not mention {name}"
+
+
+def test_architecture_md_links_to_routing():
+    text = (ROOT / "ARCHITECTURE.md").read_text()
+    assert "Persona Routing" in text or "persona routing" in text, (
+        "ARCHITECTURE.md should reference the persona routing in CLAUDE.md"
+    )
+
+
 def test_other_personas_do_not_have_agent_tool():
     # Only the controller dispatches. Other personas are leaves.
     for name in ("security-advisor", "software-architect", "code-reviewer", "test-runner"):
