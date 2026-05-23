@@ -34,7 +34,6 @@ frontend/.vite/
 .DS_Store
 .vscode/
 .idea/
-.claude/
 .arch/
 
 # Desktop overlay

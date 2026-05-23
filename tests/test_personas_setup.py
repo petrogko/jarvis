@@ -71,3 +71,25 @@ def test_hook_handles_malformed_json():
     )
     # Must NEVER fail loud — best-effort hook, exit 0 on bad input.
     assert result.returncode == 0
+
+
+def test_settings_json_is_valid():
+    assert SETTINGS.exists(), f"missing {SETTINGS}"
+    data = json.loads(SETTINGS.read_text())
+    # Required shape: PostToolUse with our matcher + command.
+    hooks = data.get("hooks", {}).get("PostToolUse", [])
+    assert hooks, "no PostToolUse hooks configured"
+    matched = [
+        h for h in hooks
+        if h.get("matcher") == "Edit|Write|MultiEdit"
+    ]
+    assert matched, "no PostToolUse matcher for Edit|Write|MultiEdit"
+    commands = [
+        sub.get("command")
+        for h in matched
+        for sub in h.get("hooks", [])
+        if sub.get("type") == "command"
+    ]
+    assert any("membrane-edit-warn.sh" in (c or "") for c in commands), (
+        f"membrane-edit-warn.sh not wired; got commands={commands}"
+    )
