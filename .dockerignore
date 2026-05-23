@@ -1,0 +1,54 @@
+# Keep secrets and host-only artifacts out of the build context.
+
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+*.crt
+auth_token
+
+# Local state
+data/
+*.db
+*.db-shm
+*.db-wal
+context/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / frontend (built separately if needed)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.vite/
+
+# Docs and dev-only files
+docs/
+.github/
+.claude/
+.arch/
+desktop-overlay/
+
+# Existing host docker assets (the claude-p sandbox image lives elsewhere)
+docker/claude/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Tests (uncomment to ship without tests; left in for in-container pytest)
+# tests/
