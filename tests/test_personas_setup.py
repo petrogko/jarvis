@@ -190,3 +190,32 @@ def test_other_personas_do_not_have_agent_tool():
         assert "Agent" not in tools, (
             f"{name} must NOT have Agent tool (only controller dispatches); got tools={tools!r}"
         )
+
+
+def test_all_five_personas_present():
+    """Aggregate guard — fail loudly if any persona file is missing."""
+    missing = [p for p in PERSONAS if not (AGENTS_DIR / f"{p}.md").exists()]
+    assert not missing, f"missing personas: {missing}"
+
+
+def test_no_jarvis_runtime_change():
+    """The personas PR must not change JARVIS runtime imports.
+
+    This is a structural test: if a future change to this PR adds
+    a new top-level import to server.py, this test should be
+    re-evaluated. Right now we assert no new persona module is
+    imported by server.py.
+    """
+    text = (ROOT / "server.py").read_text()
+    forbidden = (
+        "from .claude",
+        "import .claude",
+        "from scripts.hooks",
+        "import scripts.hooks",
+        "from personas",
+        "import personas",
+    )
+    for needle in forbidden:
+        assert needle not in text, (
+            f"server.py must not import persona infrastructure ({needle!r})"
+        )
