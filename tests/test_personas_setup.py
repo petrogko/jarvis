@@ -25,3 +25,49 @@ MEMBRANE_FILES = ("SECURITY.md", "ARCHITECTURE.md", "auth.py")
 
 def test_hook_script_exists():
     assert HOOK_SCRIPT.exists(), f"missing {HOOK_SCRIPT}"
+
+
+def _run_hook(payload: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [str(HOOK_SCRIPT)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+
+def test_hook_is_executable():
+    import stat
+    mode = HOOK_SCRIPT.stat().st_mode
+    assert mode & stat.S_IXUSR, f"{HOOK_SCRIPT} is not executable"
+
+
+def test_hook_warns_on_membrane_edit():
+    for f in MEMBRANE_FILES:
+        payload = {"tool_name": "Edit", "tool_input": {"file_path": f"/x/{f}"}}
+        result = _run_hook(payload)
+        assert result.returncode == 0, f"hook should exit 0 for {f}; got {result.returncode}"
+        assert "tripwire" in result.stderr.lower() or "membrane" in result.stderr.lower(), (
+            f"hook stderr should mention tripwire/membrane for {f}; got {result.stderr!r}"
+        )
+        assert f in result.stderr, f"hook stderr should mention {f}; got {result.stderr!r}"
+
+
+def test_hook_silent_on_non_membrane_edit():
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": "/x/server.py"}}
+    result = _run_hook(payload)
+    assert result.returncode == 0
+    assert result.stderr == "", f"expected no stderr for non-membrane edit; got {result.stderr!r}"
+
+
+def test_hook_handles_malformed_json():
+    result = subprocess.run(
+        [str(HOOK_SCRIPT)],
+        input="not-json",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    # Must NEVER fail loud — best-effort hook, exit 0 on bad input.
+    assert result.returncode == 0
