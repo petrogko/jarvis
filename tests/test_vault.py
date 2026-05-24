@@ -113,3 +113,14 @@ def test_unlock_then_lock_zeroes_key(tmp_path, monkeypatch):
     vault.lock()
     assert bytes(key_ref) == bytes(len(key_ref)), "key bytes must be zeroed on lock"
     assert vault.session() is None
+
+
+def test_derive_key_returns_bytearray():
+    """Regression guard: _derive_key must return a mutable bytearray, not bytes.
+
+    The zeroing path in _zero_bytearray requires a bytearray; if a future
+    refactor accidentally returns bytes, ctypes.from_buffer will raise a
+    TypeError instead of silently leaving key material in memory.
+    """
+    result = vault._derive_key("x", b"0" * 16)
+    assert isinstance(result, bytearray)

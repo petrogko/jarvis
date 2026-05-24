@@ -191,6 +191,8 @@ def unlock(passphrase: str) -> VaultSession:
 
     salt = SALT_PATH.read_bytes()
     key = _derive_key(passphrase, salt)
+    secrets_conn = None
+    memory_conn = None
     try:
         secrets_conn = sqlcipher.connect(str(SECRETS_DB_PATH))
         memory_conn = sqlcipher.connect(str(MEMORY_DB_PATH))
@@ -202,14 +204,16 @@ def unlock(passphrase: str) -> VaultSession:
     except sqlcipher.DatabaseError as e:
         # SQLCipher raises this on wrong key. Zero and re-raise as ours.
         _zero_bytearray(key)
-        try:
-            secrets_conn.close()
-        except Exception:
-            pass
-        try:
-            memory_conn.close()
-        except Exception:
-            pass
+        if secrets_conn is not None:
+            try:
+                secrets_conn.close()
+            except Exception:
+                pass
+        if memory_conn is not None:
+            try:
+                memory_conn.close()
+            except Exception:
+                pass
         raise VaultLockedError("Wrong passphrase") from e
 
     _session = VaultSession(secrets_conn=secrets_conn, memory_conn=memory_conn, _key=key)
