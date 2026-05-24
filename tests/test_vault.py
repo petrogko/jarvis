@@ -124,3 +124,28 @@ def test_derive_key_returns_bytearray():
     """
     result = vault._derive_key("x", b"0" * 16)
     assert isinstance(result, bytearray)
+
+
+def test_settings_get_set_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
+    monkeypatch.setattr(vault, "SECRETS_DB_PATH", tmp_path / "secrets.db")
+    monkeypatch.setattr(vault, "MEMORY_DB_PATH", tmp_path / "jarvis.db")
+
+    vault.bootstrap("pp")
+    sess = vault.unlock("pp")
+
+    sess.settings.set("ANTHROPIC_API_KEY", "sk-ant-test")
+    assert sess.settings.get("ANTHROPIC_API_KEY") == "sk-ant-test"
+    assert sess.settings.get("MISSING") is None
+    assert sess.settings.get("MISSING", default="fallback") == "fallback"
+
+    # Persistence across lock/unlock.
+    vault.lock()
+    sess2 = vault.unlock("pp")
+    assert sess2.settings.get("ANTHROPIC_API_KEY") == "sk-ant-test"
+
+    # Listing whitelisted keys (used by /api/settings/status).
+    sess2.settings.set("FISH_API_KEY", "fish-x")
+    listing = sess2.settings.list_all()
+    assert listing == {"ANTHROPIC_API_KEY": "sk-ant-test", "FISH_API_KEY": "fish-x"}

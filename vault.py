@@ -59,6 +59,36 @@ class VaultExistsError(Exception):
     """Bootstrap attempted on an already-initialized vault."""
 
 
+class _SettingsNamespace:
+    """Typed accessor for the `secrets` table on `secrets.db`."""
+
+    def __init__(self, conn: sqlcipher.Connection):
+        self._conn = conn
+
+    def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT value FROM secrets WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else default
+
+    def set(self, key: str, value: str) -> None:
+        from datetime import datetime
+        self._conn.execute(
+            "INSERT INTO secrets(key, value, updated_at) VALUES(?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, value, datetime.utcnow().isoformat() + "Z"),
+        )
+        self._conn.commit()
+
+    def delete(self, key: str) -> None:
+        self._conn.execute("DELETE FROM secrets WHERE key = ?", (key,))
+        self._conn.commit()
+
+    def list_all(self) -> dict[str, str]:
+        rows = self._conn.execute("SELECT key, value FROM secrets").fetchall()
+        return {k: v for k, v in rows}
+
+
 @dataclass
 class VaultSession:
     """Live unlocked session — holds open SQLCipher connections.
@@ -69,6 +99,10 @@ class VaultSession:
     secrets_conn: sqlcipher.Connection
     memory_conn: sqlcipher.Connection
     _key: bytearray  # zeroed on lock()
+
+    @property
+    def settings(self) -> "_SettingsNamespace":
+        return _SettingsNamespace(self.secrets_conn)
 
 
 _session: Optional[VaultSession] = None
