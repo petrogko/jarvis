@@ -49,6 +49,13 @@ DATA_DIR = _BASE_DIR / "data"
 SALT_PATH = DATA_DIR / "kdf.salt"
 SECRETS_DB_PATH = DATA_DIR / "secrets.db"
 MEMORY_DB_PATH = DATA_DIR / "jarvis.db"
+LEGACY_ENV_PATH = _BASE_DIR / ".env.bootstrap"
+
+MIGRATION_FLAG_KEY = "_vault_migration_unlock_count"
+ALLOWED_LEGACY_ENV_KEYS = {
+    "ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
+    "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
+}
 
 
 class VaultLockedError(Exception):
@@ -177,6 +184,13 @@ def bootstrap(passphrase: str) -> None:
     already exists, raises VaultExistsError without modifying anything.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # If a plaintext jarvis.db is sitting at the target path, move it
+    # to a .bak so the SQLCipher file can be created at the same path.
+    if MEMORY_DB_PATH.exists():
+        bak = MEMORY_DB_PATH.with_suffix(MEMORY_DB_PATH.suffix + ".pre-encrypt.bak")
+        if not bak.exists():
+            os.rename(MEMORY_DB_PATH, bak)
+            os.chmod(bak, 0o600)
     # Atomic salt creation — O_CREAT | O_EXCL is the mutex (spec §5).
     salt = secrets.token_bytes(SALT_LENGTH_BYTES)
     try:
@@ -251,4 +265,74 @@ def unlock(passphrase: str) -> VaultSession:
         raise VaultLockedError("Wrong passphrase") from e
 
     _session = VaultSession(secrets_conn=secrets_conn, memory_conn=memory_conn, _key=key)
+
+    # Post-unlock: auto-clean migration backups after the SECOND unlock.
+    # (Spec §8 step 7.)
+    count_str = _session.settings.get(MIGRATION_FLAG_KEY)
+    if count_str is not None:
+        count = int(count_str) + 1
+        _session.settings.set(MIGRATION_FLAG_KEY, str(count))
+        if count >= 1:
+            _purge_migration_backups()
     return _session
+
+
+def _purge_migration_backups() -> None:
+    for path in (
+        MEMORY_DB_PATH.with_suffix(MEMORY_DB_PATH.suffix + ".pre-encrypt.bak"),
+        LEGACY_ENV_PATH.with_suffix(LEGACY_ENV_PATH.suffix + ".pre-encrypt.bak"),
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def migrate_from_legacy(sess: VaultSession) -> None:
+    """One-shot import of legacy plaintext data. Idempotent — skips if
+    already migrated. Called once after bootstrap completes."""
+
+    # Memory import — read from .bak (bootstrap moved it).
+    legacy_db_bak = MEMORY_DB_PATH.with_suffix(MEMORY_DB_PATH.suffix + ".pre-encrypt.bak")
+    if legacy_db_bak.exists():
+        already_imported = sess.memory_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='memory'"
+        ).fetchone()
+        if not already_imported:
+            # Use stdlib sqlite3 to read the legacy plaintext DB (NOT SQLCipher).
+            import sqlite3 as _stdlib_sqlite
+            src = _stdlib_sqlite.connect(f"file:{legacy_db_bak}?mode=ro", uri=True)
+            # Copy schema + rows table by table.
+            tables = src.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            for name, ddl in tables:
+                sess.memory_conn.execute(ddl)
+                rows = src.execute(f"SELECT * FROM {name}").fetchall()
+                if rows:
+                    placeholders = ",".join("?" for _ in rows[0])
+                    sess.memory_conn.executemany(
+                        f"INSERT INTO {name} VALUES ({placeholders})", rows
+                    )
+            sess.memory_conn.commit()
+            src.close()
+
+    # .env import — read from the optional bind-mount path.
+    if LEGACY_ENV_PATH.exists():
+        env_bak = LEGACY_ENV_PATH.with_suffix(LEGACY_ENV_PATH.suffix + ".pre-encrypt.bak")
+        if not env_bak.exists():
+            for line in LEGACY_ENV_PATH.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k in ALLOWED_LEGACY_ENV_KEYS and v:
+                    sess.settings.set(k, v)
+            os.rename(LEGACY_ENV_PATH, env_bak)
+            os.chmod(env_bak, 0o600)
+
+    # Mark migration done; start the unlock counter at 0 for cleanup tracking.
+    if sess.settings.get(MIGRATION_FLAG_KEY) is None:
+        sess.settings.set(MIGRATION_FLAG_KEY, "0")

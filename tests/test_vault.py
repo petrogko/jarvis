@@ -27,6 +27,13 @@ sys.path.insert(0, str(ROOT))
 import vault
 
 
+@pytest.fixture(autouse=True)
+def _vault_teardown():
+    """Ensure vault is locked between tests so module-level _session doesn't leak."""
+    yield
+    vault.lock()
+
+
 def test_module_surface_exists():
     """Public surface required by spec §4."""
     assert callable(vault.bootstrap)
@@ -149,3 +156,69 @@ def test_settings_get_set_roundtrip(tmp_path, monkeypatch):
     sess2.settings.set("FISH_API_KEY", "fish-x")
     listing = sess2.settings.list_all()
     assert listing == {"ANTHROPIC_API_KEY": "sk-ant-test", "FISH_API_KEY": "fish-x"}
+
+
+def _make_legacy_state(tmp_path: pathlib.Path) -> None:
+    """Build a plaintext memory.db (== jarvis.db at the legacy path) + .env."""
+    # Legacy plaintext memory DB.
+    legacy = tmp_path / "jarvis.db"
+    conn = sqlite3.connect(str(legacy))
+    conn.execute("CREATE TABLE memory (id INTEGER PRIMARY KEY, content TEXT)")
+    conn.execute("INSERT INTO memory(content) VALUES('I prefer dry martinis')")
+    conn.execute("INSERT INTO memory(content) VALUES('Birthday is April 4')")
+    conn.commit()
+    conn.close()
+    # Legacy .env at the bootstrap mount path.
+    (tmp_path / ".env.bootstrap").write_text(
+        "ANTHROPIC_API_KEY=sk-ant-legacy\nFISH_API_KEY=fish-legacy\n",
+        encoding="utf-8",
+    )
+
+
+def test_migrate_imports_memory_and_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
+    monkeypatch.setattr(vault, "SECRETS_DB_PATH", tmp_path / "secrets.db")
+    monkeypatch.setattr(vault, "MEMORY_DB_PATH", tmp_path / "jarvis.db")
+    monkeypatch.setattr(vault, "LEGACY_ENV_PATH", tmp_path / ".env.bootstrap")
+
+    _make_legacy_state(tmp_path)
+    # Bootstrap MOVES the legacy plaintext DB to a .bak first so it can
+    # write the encrypted one at the same path.
+    vault.bootstrap("pp")
+    sess = vault.unlock("pp")
+    vault.migrate_from_legacy(sess)
+
+    # Secrets imported.
+    assert sess.settings.get("ANTHROPIC_API_KEY") == "sk-ant-legacy"
+    assert sess.settings.get("FISH_API_KEY") == "fish-legacy"
+
+    # Memory imported — verify row count matches.
+    cnt = sess.memory_conn.execute("SELECT count(*) FROM memory").fetchone()[0]
+    assert cnt == 2
+
+    # Backup files created.
+    assert (tmp_path / "jarvis.db.pre-encrypt.bak").exists()
+    assert (tmp_path / ".env.bootstrap.pre-encrypt.bak").exists()
+
+
+def test_migrate_auto_cleanup_on_second_unlock(tmp_path, monkeypatch):
+    """Spec §8 step 7: after the second successful unlock, .bak files are deleted."""
+    monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
+    monkeypatch.setattr(vault, "SECRETS_DB_PATH", tmp_path / "secrets.db")
+    monkeypatch.setattr(vault, "MEMORY_DB_PATH", tmp_path / "jarvis.db")
+    monkeypatch.setattr(vault, "LEGACY_ENV_PATH", tmp_path / ".env.bootstrap")
+
+    _make_legacy_state(tmp_path)
+    vault.bootstrap("pp")
+    sess = vault.unlock("pp")
+    vault.migrate_from_legacy(sess)
+    assert (tmp_path / "jarvis.db.pre-encrypt.bak").exists()
+
+    # Second unlock — should auto-delete backups.
+    vault.lock()
+    vault.unlock("pp")
+    # The auto-cleanup happens inside unlock().
+    assert not (tmp_path / "jarvis.db.pre-encrypt.bak").exists()
+    assert not (tmp_path / ".env.bootstrap.pre-encrypt.bak").exists()
