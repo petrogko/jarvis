@@ -1541,6 +1541,82 @@ app.add_middleware(
     allow_headers=["content-type", "x-jarvis-token"],
 )
 
+# Vault-locked middleware. MUST be installed AFTER LocalTokenAuthMiddleware
+# so auth runs first (per spec §5 middleware order). Both middlewares allow
+# the auth + health endpoints through.
+import vault as _vault_mod
+
+_VAULT_PUBLIC_PATHS = frozenset({
+    "/api/health",
+    "/api/auth/state",
+    "/api/auth/bootstrap",
+    "/api/auth/unlock",
+})
+
+
+@app.middleware("http")
+async def vault_locked_middleware(request, call_next):
+    if request.url.path in _VAULT_PUBLIC_PATHS:
+        return await call_next(request)
+    if _vault_mod.session() is None:
+        return JSONResponse({"detail": "vault locked"}, status_code=423)
+    return await call_next(request)
+
+
+# -- Auth endpoints --------------------------------------------------------
+
+
+class _PassphraseBody(BaseModel):
+    passphrase: str
+
+
+_LAST_UNLOCK_ATTEMPT = {"t": 0.0}
+_UNLOCK_MIN_INTERVAL_S = 2.0
+
+
+@app.get("/api/auth/state")
+async def api_auth_state():
+    return {
+        "initialized": _vault_mod.is_initialized(),
+        "locked": _vault_mod.session() is None,
+    }
+
+
+@app.post("/api/auth/bootstrap")
+async def api_auth_bootstrap(body: _PassphraseBody):
+    from fastapi import HTTPException
+    try:
+        _vault_mod.bootstrap(body.passphrase)
+    except _vault_mod.VaultExistsError:
+        raise HTTPException(status_code=409, detail="vault already initialized")
+    return {"ok": True}
+
+
+@app.post("/api/auth/unlock")
+async def api_auth_unlock(body: _PassphraseBody):
+    """Rate limit FIRES BEFORE the KDF (security-advisor required fix #1)."""
+    from fastapi import HTTPException
+    now = time.monotonic()
+    if now - _LAST_UNLOCK_ATTEMPT["t"] < _UNLOCK_MIN_INTERVAL_S:
+        raise HTTPException(status_code=429, detail="too many unlock attempts")
+    _LAST_UNLOCK_ATTEMPT["t"] = now
+    try:
+        sess = _vault_mod.unlock(body.passphrase)
+    except _vault_mod.VaultLockedError:
+        raise HTTPException(status_code=401, detail="wrong passphrase")
+    # Best-effort one-shot migration after the first unlock.
+    try:
+        _vault_mod.migrate_from_legacy(sess)
+    except Exception as e:
+        log.exception("migration failed: %s", e)
+    return {"ok": True}
+
+
+@app.post("/api/auth/lock")
+async def api_auth_lock():
+    _vault_mod.lock()
+    return {"ok": True}
+
 
 # -- REST Endpoints --------------------------------------------------------
 
