@@ -14,7 +14,7 @@
 2. **Encrypt secrets and memory at rest from day one.** No plaintext API keys, no plaintext memory database on disk.
 3. **Isolate blast radius.** A bug in the memory subsystem cannot corrupt secrets, and vice versa. Two separate encrypted SQLite databases.
 4. **Real encryption.** User passphrase required on every container start to unlock. No machine-bound key escape hatch (FileVault remains the laptop-loss defense; this is layered on top, not in place of).
-5. **Safe migration.** Existing `data/memory.db` (plain SQLite today) and `.env` are imported on first successful unlock; originals are kept until import is verified.
+5. **Safe migration.** Existing `data/jarvis.db` (plain SQLite today) and `.env` are imported on first successful unlock; originals are kept until import is verified.
 
 ## 2. Non-goals
 
@@ -31,7 +31,8 @@ Two SQLCipher databases live under the existing bind-mounted `data/` directory:
 | File | Purpose | Schema (load-bearing tables) |
 |---|---|---|
 | `data/secrets.db` | API keys, auth token, UI preferences | `secrets(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)` |
-| `data/memory.db` | Conversation memory, tasks, audit (replaces today's plain SQLite memory) | Existing schema from `memory.py` + tasks + audit, ported under SQLCipher. |
+| `data/jarvis.db` | Conversation memory, tasks (replaces today's plain SQLite memory at the same path) | Existing schema from `memory.py` + tasks, ported under SQLCipher. |
+| `data/audit.jsonl` | Audit log | **Stays plaintext, append-only** — preserves forensic recoverability when the passphrase is lost. See §11 SECURITY.md update. |
 
 Both are encrypted with the same master key, derived from the user's passphrase by **Argon2id** (parameters specified in §6). The KDF salt is stored unencrypted at `data/kdf.salt` (16 bytes, random, generated on first boot). The salt being public is fine — Argon2id is salted-and-stretched; what protects the data is the passphrase, not the salt.
 
@@ -59,10 +60,12 @@ Modified modules:
   - `POST /api/auth/unlock` — accepts a passphrase, calls `vault.unlock`. Returns 200 on success, 401 on wrong passphrase.
   - `POST /api/auth/lock` — calls `vault.lock`. Returns 204.
 - `memory.py` — connection-construction swap to use the SQLCipher connection from `vault.session().memory_conn`. No schema changes; same SQL. (`memory.py` no longer opens its own DB file.)
-- `auth.py` — auth token now lives in `secrets.db` table not the `auth_token` file. The startup flow:
+- `auth.py` — auth token now lives in `secrets.db` table not the `data/.local_token` file. The startup flow:
   1. Container starts, no vault unlocked.
-  2. All `/api/*` return `423` except auth + health.
-  3. First request after unlock: `auth.py` reads the token from `vault.session().secrets`. If missing, generates one.
+  2. All `/api/*` return `423` except `GET /api/health`, `GET /api/auth/state`, `POST /api/auth/bootstrap`, `POST /api/auth/unlock`.
+  3. First request after unlock: `auth.py` reads the token from `vault.session().secrets`. If missing, generates one and writes back.
+  4. `auth.py:_PUBLIC_PATHS` MUST be extended to include the four auth endpoints (current `_PUBLIC_PATHS` at `auth.py:33` rejects unauthenticated requests; without this fix the unlock endpoint is unreachable).
+  5. **The token does not survive container restart unless the vault is unlocked again** — operator tooling that reads `data/.local_token` directly stops working. Documented in §11 SECURITY.md update.
 
 Removed surface:
 
@@ -81,7 +84,11 @@ Removed surface:
 | `POST /api/auth/lock` | UI "lock now" button | Token | No (must already be unlocked) |
 | Everything else (`/api/settings/*`, `/ws/voice`, `/api/tasks`, `/api/memory`, …) | After unlock | Token | **No — returns `423 Locked`** |
 
-Rate limit on `unlock`: 1 attempt per 2 seconds, no hard lockout (would be theater — see §3 reasoning).
+**Middleware order is load-bearing.** `auth.py:_PUBLIC_PATHS` (the existing token-auth bypass list) MUST be extended to include `POST /api/auth/bootstrap`, `POST /api/auth/unlock`, `POST /api/auth/lock`, and `GET /api/auth/state`. The vault-locked middleware (returns 423) runs *after* token auth; both must allow the auth endpoints through.
+
+**Rate limit on `unlock` MUST fire before any call to `vault.unlock()`.** Implementation: an in-process counter checked at the top of the handler, returning `429 Too Many Requests` if exceeded. The Argon2id KDF allocates 256 MiB; four concurrent unlocks would exhaust the 1 GiB container memory cap. Rate limit: 1 attempt per 2 seconds, global (single-user model). No hard lockout (the encrypted blob is just bytes — a lockout would be theater).
+
+**Bootstrap idempotency MUST be atomic.** `POST /api/auth/bootstrap` creates `data/kdf.salt` with `O_CREAT | O_EXCL` semantics — the file-creation atomicity is the mutex. If the file already exists, return `409 Conflict`. There must be no check-then-act window between `vault.is_initialized()` and salt creation.
 
 ## 6. Cryptography
 
@@ -92,8 +99,9 @@ Rate limit on `unlock`: 1 attempt per 2 seconds, no hard lockout (would be theat
 | Argon2 time cost | 3 iterations | ~1 sec on the target M-series Macs; acceptable lock-screen latency. |
 | Argon2 parallelism | 4 | Matches typical M-series core count. |
 | Argon2 output length | 32 bytes | SQLCipher key. |
-| Salt | 16 bytes random, stored at `data/kdf.salt` | Generated once on bootstrap; never rotated within a single passphrase generation. |
-| Cipher | SQLCipher's default (AES-256 CBC + HMAC-SHA512) | Battle-tested, ships with `pysqlcipher3`. |
+| Salt | 16 bytes random, stored at `data/kdf.salt` mode 0644 (public by design) | Generated once on bootstrap via `O_CREAT \| O_EXCL`; never rotated within a single passphrase generation. |
+| Cipher | SQLCipher 4.x defaults (AES-256-CBC + HMAC-SHA512 + 256K KDF iterations per page) | Battle-tested. **Pinned via `PRAGMA cipher_compatibility = 4`** on every connection to prevent silent downgrade if the bundled library version changes. |
+| Key material lifetime | Held as `bytearray`, zeroed via `ctypes.memset` on `vault.lock()` | `bytes` are immutable; `bytearray` allows deterministic zeroing. |
 
 Key handling in memory:
 - Master key held in a single module-level variable inside `vault.py`. Never written to disk, never logged, never returned over an API.
@@ -117,12 +125,15 @@ The lock-screen is a separate Three.js orb state — the orb is dim and stationa
 
 Runs **once** on the first successful `bootstrap` or `unlock` where legacy files are detected. Order:
 
-1. **Detect:** `data/memory.db` exists as plain SQLite (the migration is idempotent; if `vault.session().memory_conn` already has tables, skip).
-2. **Backup:** copy `data/memory.db` → `data/memory.db.pre-encrypt.bak`. Copy `.env` → `data/.env.pre-encrypt.bak`. Both with chmod 600.
+1. **Detect:** `data/jarvis.db` exists as plain SQLite (the migration is idempotent; if `vault.session().memory_conn` already has tables, skip).
+2. **Backup:** copy `data/jarvis.db` → `data/jarvis.db.pre-encrypt.bak`. Copy `.env` → `data/.env.pre-encrypt.bak`. Both with chmod 600.
 3. **Import memory:** open plaintext `memory.db` read-only, iterate rows, insert into the encrypted `memory.db` via `vault.session().memory_conn`. Inside a single transaction.
 4. **Import .env:** if `/app/.env.bootstrap` exists in the container (only present when the user opts into the bind mount documented in §9), parse it with the existing `_read_env` logic and write each whitelisted key (the same `allowed` set from `server.py:2627`) into `secrets.db`. If the file is absent, this step is a no-op — the user will enter keys via the UI settings panel after unlock.
 5. **Verify:** count rows in encrypted `memory.db` per table; compare to plaintext counts. Compare `secrets.db` values to the parsed env values. On any mismatch → abort migration, leave the encrypted DBs in their pre-migration state, surface the error to the UI. The `.bak` files remain.
-6. **Delete originals:** `os.remove("data/memory.db")` and `os.remove(".env")`. The `.bak` files stay until the user clicks "Clear migration backups" in the UI (a settings button that appears only when backups exist).
+6. **Delete originals:** `os.remove("data/jarvis.db")` and `os.remove(".env")` (or the optional bind-mount path, see §9).
+7. **Auto-delete backups on next successful unlock:** the `.bak` files (`data/jarvis.db.pre-encrypt.bak`, `data/.env.pre-encrypt.bak`) are kept for **exactly one** unlock cycle as a safety net. On the SECOND successful unlock after migration, they are deleted automatically. The UI also shows a "Clear migration backups now" button between the first and second unlock for users who want to purge immediately. This bounds plaintext key coexistence to a single restart window.
+
+**`os.getenv` audit (must complete before migration ships).** Every call to `os.getenv("ANTHROPIC_API_KEY")`, `os.getenv("FISH_API_KEY")`, and `os.getenv("FISH_VOICE_ID")` in the codebase must be replaced with `vault.session().secrets.get(...)` or its equivalent helper. Known call sites at design time: `server.py:74`, `server.py:75-77` (FISH_API_KEY / FISH_API_URL / FISH_VOICE_ID), `server.py:2635`, `server.py:2647`. The plan must include a `grep -nE 'os\.getenv\("(ANTHROPIC|FISH)_'` sweep and a test asserting no such call survives outside `vault.py` and the legacy-import path.
 
 If migration fails partway: the encrypted DBs may have a partial write — they're new in this run, so we drop and recreate them on next attempt. The user's data lives in the `.bak` files; they're never the only copy.
 
@@ -166,23 +177,39 @@ Added under `tests/`:
 ## 11. Threat model deltas (changes to SECURITY.md)
 
 Adds:
-- Sensitive data at rest is encrypted with a user-derived key. Default deployment posture: encrypted SQLite via SQLCipher, master key derived by Argon2id from a user-supplied passphrase, never persisted.
-- The passphrase is the single root of trust for at-rest data. Loss = data loss; no backdoor.
+- Sensitive data at rest is encrypted with a user-derived key. Default deployment posture: encrypted SQLite via SQLCipher 4.x (`PRAGMA cipher_compatibility = 4`), master key derived by Argon2id (256 MiB / t=3 / p=4) from a user-supplied passphrase, never persisted.
+- The passphrase is the single root of trust for at-rest data. **Loss = permanent data loss; no recovery path exists.** Operators MUST keep an out-of-band backup of the passphrase.
 - The vault is locked across container restarts; the voice loop is unavailable until unlocked.
+- `data/.local_token` no longer exists. The auth token is generated in-process on first request after unlock and stored in `secrets.db`. Tooling that read `data/.local_token` directly must now query `/api/auth/state` and use the unlock flow.
+- `data/audit.jsonl` remains plaintext, append-only — this is a deliberate forensic preservation choice. An attacker with disk access can read it; an attacker who steals only the encrypted DBs cannot. Operators concerned about audit-log confidentiality should rely on FileVault.
+- `data/jarvis.db.pre-encrypt.bak` and `data/.env.pre-encrypt.bak` are plaintext backups created during migration. They are auto-deleted on the second successful unlock after migration. The window of plaintext coexistence is bounded to one restart cycle by design.
+- `data/kdf.salt` is public by design (mode 0644). It must not be rotated independently of a passphrase change.
+- **Remote brute-force exposure when `--host 0.0.0.0` is used:** an attacker with LAN access can attempt the unlock at the rate-limited rate of 1 attempt / 2 seconds. The Argon2id cost makes the KDF itself slow; the passphrase strength is the load-bearing defense. Operators MUST use a strong passphrase (zxcvbn ≥ 3) if exposing on LAN; the frontend enforces this at bootstrap time as a UX guardrail.
+
+Updates to data classification table:
+- `ANTHROPIC_API_KEY`, `FISH_API_KEY`, `FISH_VOICE_ID`: at-rest → `data/secrets.db` (SQLCipher, Argon2id-derived key)
+- `auth_token`: at-rest → `data/secrets.db` (was `data/.local_token` file)
+- Memory database `data/jarvis.db`: at-rest → SQLCipher with same master key as secrets
+
+Operator checklist additions:
+- Set a strong passphrase on first run (zxcvbn ≥ 3 enforced client-side).
+- Keep an out-of-band backup of the passphrase. There is no recovery.
+- After first unlock, the second unlock clears the plaintext migration backups automatically.
 
 Removes:
 - "API keys live in `.env`" — replaced.
 - "Memory.db is plaintext, FileVault is the at-rest defense" — replaced (FileVault stays as defense in depth).
+- "`auth_token` file at `data/.local_token` mode 0600" — replaced.
 
 Tripwire hook fires on edits to `SECURITY.md` per the existing personas system; security-advisor must review the diff.
 
-## 12. Open questions (for security-advisor)
+## 12. Open questions — resolved by security-advisor review
 
-1. Is Argon2id memory=256 MiB / time=3 / parallelism=4 the right calibration for this threat model and the 1 GiB container budget? Should we bump memory cost?
-2. Is the migration's "delete originals after verify" sequencing correct, or should we leave originals indefinitely and add a manual "purge" button? Risk vs. ergonomics.
-3. Is `pysqlcipher3` the right binding (it bundles libsqlcipher), or should we link against system libsqlcipher (smaller image, more moving parts in CI)?
-4. Rate-limiting `unlock` — is 1/2s sufficient, or should we add a progressive delay (e.g. doubling) to defeat brute-force without a hard lockout?
-5. Should the bootstrap flow enforce a minimum passphrase entropy (zxcvbn ≥3)? Or trust the user?
+1. **Argon2 calibration:** 256 MiB / t=3 / p=4 retained. Acceptable for the threat model. Optional upgrade to 512 MiB / t=4 deferred to a later PR if perf budget allows.
+2. **Migration sequencing:** auto-delete on second successful unlock (per §8 step 7). Bounds plaintext window to one restart.
+3. **`pysqlcipher3` bundled libsqlcipher:** accepted with explicit version pin in `requirements.txt` + `PRAGMA cipher_compatibility = 4` to lock the cipher version. CVE response = package bump.
+4. **Unlock rate limit:** flat 1/2s, applied **before** KDF invocation. Loopback-bound by default keeps the threat model local. Progressive delay deferred (would be useful only when `--host 0.0.0.0` is set; documented in §11).
+5. **Passphrase entropy:** zxcvbn ≥ 3 enforced client-side at bootstrap as a UX guardrail. Server does not validate (user is sovereign over their own data).
 
 ## 13. Out-of-scope follow-ups (separate backlog items)
 
