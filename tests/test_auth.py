@@ -19,13 +19,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
-def _reload_auth(tmp_token_path: pathlib.Path | None = None):
-    """Reload auth.py, optionally redirecting the token file."""
+def _reload_auth():
+    """Reload auth.py."""
     if "auth" in sys.modules:
         del sys.modules["auth"]
     import auth as _auth  # noqa: WPS433
-    if tmp_token_path is not None:
-        _auth._TOKEN_PATH = tmp_token_path  # type: ignore[attr-defined]
     return _auth
 
 
@@ -66,18 +64,30 @@ def test_check_token_rejects_empty():
     assert auth.check_token("expected", "expected")
 
 
-def test_load_or_create_token_persists(tmp_path):
-    token_file = tmp_path / ".local_token"
-    auth = _reload_auth(token_file)
+def test_load_or_create_token_persists(tmp_path, monkeypatch):
+    # Token is now stored in the vault (not a file). Set up an unlocked vault
+    # and verify load_or_create_token generates a token, persists it, and is
+    # idempotent. (The old data/.local_token file path is gone.)
+    import vault
+
+    monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
+    monkeypatch.setattr(vault, "SECRETS_DB_PATH", tmp_path / "secrets.db")
+    monkeypatch.setattr(vault, "MEMORY_DB_PATH", tmp_path / "jarvis.db")
+    monkeypatch.setattr(vault, "LEGACY_ENV_PATH", tmp_path / ".env.bootstrap")
+
+    vault.bootstrap("pp")
+    sess = vault.unlock("pp")
+
+    auth = _reload_auth()
     t1 = auth.load_or_create_token()
     assert len(t1) >= 32
-    assert token_file.exists()
+    assert sess.settings.get("AUTH_TOKEN") == t1
     # Idempotent — second call returns the same token
     t2 = auth.load_or_create_token()
     assert t1 == t2
-    # And the file is mode 0600
-    mode = token_file.stat().st_mode & 0o777
-    assert mode in (0o600, 0o400), f"expected 0600, got {oct(mode)}"
+
+    vault.lock()
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +161,34 @@ def test_options_preflight_bypasses_auth():
     # registered — that's fine; the point is the auth middleware let it
     # through.)
     assert r.status_code != 401
+
+
+def test_public_paths_include_vault_auth_endpoints():
+    """Spec §5 + security-advisor required fix #4."""
+    import auth
+    for path in ("/api/auth/state", "/api/auth/bootstrap", "/api/auth/unlock", "/api/auth/lock"):
+        assert path in auth._PUBLIC_PATHS, f"{path} must be in _PUBLIC_PATHS"
+
+
+def test_load_or_create_token_uses_vault_when_unlocked(tmp_path, monkeypatch):
+    import auth
+    import vault
+
+    monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
+    monkeypatch.setattr(vault, "SECRETS_DB_PATH", tmp_path / "secrets.db")
+    monkeypatch.setattr(vault, "MEMORY_DB_PATH", tmp_path / "jarvis.db")
+    monkeypatch.setattr(vault, "LEGACY_ENV_PATH", tmp_path / ".env.bootstrap")
+
+    vault.bootstrap("pp")
+    sess = vault.unlock("pp")
+
+    # First call: generates and stores in vault.
+    t1 = auth.load_or_create_token()
+    assert t1
+    assert sess.settings.get("AUTH_TOKEN") == t1
+    # Second call: idempotent — returns the same token.
+    t2 = auth.load_or_create_token()
+    assert t1 == t2
+
+    vault.lock()

@@ -6,17 +6,15 @@ Defense-in-depth on top of the default loopback bind. Requests from
 any other source must present X-JARVIS-Token (REST) or ?token=
 (WebSocket handshake).
 
-The token is generated once on first start, persisted under data/ with
-mode 0600, and printed to stdout at startup so a user who knowingly
-opens --host can copy it to a remote client.
+The token is generated once on first start, stored in the vault under the
+AUTH_TOKEN settings key, and printed to stdout at startup so a user who
+knowingly opens --host can copy it to a remote client.
 """
 
 from __future__ import annotations
 
 import hmac
 import logging
-import os
-import secrets
 from pathlib import Path
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -25,33 +23,40 @@ from starlette.responses import JSONResponse
 
 log = logging.getLogger("jarvis.auth")
 
-_TOKEN_PATH = Path(__file__).parent / "data" / ".local_token"
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 # Paths that never require auth. Health is for liveness probes; the
-# static frontend assets must load before the client can present a token.
-_PUBLIC_PATHS: tuple[str, ...] = ("/api/health",)
+# vault auth endpoints must be reachable before unlock; the static
+# frontend assets must load before the client can present a token.
+_PUBLIC_PATHS: frozenset[str] = frozenset({
+    "/api/health",
+    "/api/auth/state",
+    "/api/auth/bootstrap",
+    "/api/auth/unlock",
+    "/api/auth/lock",
+})
 _PUBLIC_PREFIXES: tuple[str, ...] = ("/assets/",)
 _PUBLIC_EXACT: frozenset[str] = frozenset({"/", "/favicon.ico"})
 
 
 def load_or_create_token() -> str:
-    """Read the persisted token, or generate and persist one (0600)."""
-    _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if _TOKEN_PATH.exists():
-        try:
-            existing = _TOKEN_PATH.read_text().strip()
-            if existing:
-                return existing
-        except OSError as e:
-            log.warning("could not read local token (%s); regenerating", e)
-    token = secrets.token_urlsafe(32)
-    _TOKEN_PATH.write_text(token)
-    try:
-        os.chmod(_TOKEN_PATH, 0o600)
-    except OSError:
-        pass
-    return token
+    """Read auth token from the vault. Generates and stores one if absent.
+
+    REQUIRES the vault to be unlocked. Returns "" if locked — callers
+    must check for this and prompt unlock before authenticating.
+    """
+    import secrets as _secrets
+    import vault
+
+    sess = vault.session()
+    if sess is None:
+        return ""
+    existing = sess.settings.get("AUTH_TOKEN")
+    if existing:
+        return existing
+    new_token = _secrets.token_urlsafe(32)
+    sess.settings.set("AUTH_TOKEN", new_token)
+    return new_token
 
 
 def is_loopback(host: str | None) -> bool:
