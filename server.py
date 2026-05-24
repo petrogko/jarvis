@@ -1541,9 +1541,12 @@ app.add_middleware(
     allow_headers=["content-type", "x-jarvis-token"],
 )
 
-# Vault-locked middleware. MUST be installed AFTER LocalTokenAuthMiddleware
-# so auth runs first (per spec §5 middleware order). Both middlewares allow
-# the auth + health endpoints through.
+# Vault-locked middleware. FastAPI runs middlewares LIFO — this
+# decorator registers AFTER LocalTokenAuthMiddleware, which means
+# vault-locked runs FIRST (outer layer). Order is intentional: a
+# request to a protected endpoint while locked returns 423 (more
+# informative than "missing token"). Both layers share the public-
+# path allowlist so /api/auth/* and /api/health bypass both.
 import vault as _vault_mod
 
 _VAULT_PUBLIC_PATHS = frozenset({

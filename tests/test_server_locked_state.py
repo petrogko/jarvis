@@ -44,7 +44,9 @@ def test_state_reports_uninitialized_then_initialized(isolated_vault):
     assert r.json() == {"initialized": True, "locked": True}
 
 
-def test_bootstrap_then_unlock_flow(isolated_vault):
+def test_bootstrap_then_unlock_flow(isolated_vault, monkeypatch):
+    import server
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
     c = _client()
     r = c.post("/api/auth/bootstrap", json={"passphrase": "pp"})
     assert r.status_code == 200
