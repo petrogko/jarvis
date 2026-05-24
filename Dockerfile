@@ -32,6 +32,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         ca-certificates \
         tini \
+        libsqlcipher-dev \
+        libsqlcipher1 \
+        build-essential \
+        python3-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root user (uid 10001 — outside the typical host-uid range)

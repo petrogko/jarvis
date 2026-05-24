@@ -9,3 +9,7 @@ pydantic==2.10.3
 websockets==13.1
 playwright==1.49.0
 pyyaml==6.0.2
+# Vault (P1+P2) — pinned for crypto auditability; bump deliberately.
+# pysqlcipher3 bundles libsqlcipher 4.x — see SECURITY.md.
+pysqlcipher3==1.2.0
+argon2-cffi==23.1.0
