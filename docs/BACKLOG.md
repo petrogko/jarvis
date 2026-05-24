@@ -97,6 +97,36 @@ Living tracker for in-flight and pending work. Each entry: short rationale + sta
 
 ---
 
+### P11 — OpenClaw audit + bridge POC
+**Status:** proposed (deferred until vault PR lands)
+**Persona routing:** `software-architect` (new integration surface).
+
+**Why:** OpenClaw (`/Users/petrog/Development/github/openclaw`) is an MIT-licensed multi-channel personal-assistant framework with 50+ extensions (`apple-notes`, `github`, `gh-issues`, `1password`, etc.). Bridging select extensions into JARVIS as `[ACTION:X]` backends could massively expand capabilities without rewriting JARVIS.
+
+**Sketch (post-vault):**
+1. Audit `openclaw/security/`, `openclaw/skills/`, `packages/plugin-sdk/`, `src/gateway/protocol/` — document what JARVIS could learn or borrow (license-permitting).
+2. Pick one extension as a POC (`apple-notes` is the cleanest test case — Node-side, no AppleScript collision since it goes through OpenClaw's own bridge).
+3. Spec a JS↔Python bridge: JARVIS dispatches `[ACTION:NOTE_FROM_OPENCLAW]` → spawns the OpenClaw extension via its plugin SDK → captures result.
+
+**Blocker:** subagent file-access permissions to `/Users/petrog/Development/github/openclaw`. Either grant via `/permissions` or do the audit in-thread.
+
+---
+
+### P12 — WorldMonitor integration: news + geopolitical briefings
+**Status:** proposed
+**Persona routing:** `software-architect` (new external dependency + trust-boundary).
+
+**Why:** WorldMonitor (`/Users/petrog/Development/github/worldmonitor`, also hosted at worldmonitor.app) is a real-time global intelligence dashboard with 500+ news feeds + AI synthesis. JARVIS could call its public HTTP API to answer "what's happening in <region/topic>" voice queries.
+
+**⚠ License caveat:** WorldMonitor is **AGPL v3** (strong copyleft). JARVIS **cannot vendor their code** without itself becoming AGPL. JARVIS **can** call their public HTTPS endpoints (network linking, not derivative work — long-standing FOSS interpretation). Integration MUST be network-only.
+
+**Sketch:**
+1. Verify WorldMonitor exposes a stable public REST API (check their docs at worldmonitor.app/docs/documentation; if no public API, scope-down or request access).
+2. New action: `[ACTION:NEWS topic="..."]` and `[ACTION:WORLD region="..."]`. Handler hits the API, passes results through `untrusted_content.sanitize` + `wrap` (the API response is third-party untrusted content), feeds to Claude for butler-tone synthesis.
+3. Add API key (if required) to the vault `secrets` table per P1.
+
+---
+
 ### P10 — Persona invocation from voice loop
 **Status:** proposed (speculative)
 **Persona routing:** `software-architect`.
