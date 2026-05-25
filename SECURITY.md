@@ -32,6 +32,7 @@ disabled by default; opting in requires presenting an auth token.
 | Data                                          | Class       | At rest                                                   | In transit          |
 |-----------------------------------------------|-------------|-----------------------------------------------------------|---------------------|
 | `ANTHROPIC_API_KEY`, `FISH_API_KEY`, `FISH_VOICE_ID` | Secret | `data/secrets.db` (SQLCipher, Argon2id-derived key) | TLS to provider     |
+| `TTS_PROVIDER`, `TTS_VOICE`                           | Secret | `data/secrets.db` (SQLCipher, Argon2id-derived key) | vault → `synthesize_speech` dispatcher only; no additional network surface |
 | `auth_token`                                  | Secret      | `data/secrets.db` (was `data/.local_token` file)         | header/query        |
 | `data/secrets.db`                             | Secret      | SQLCipher, key derived via Argon2id (256 MiB / t=3 / p=4); unlocked by user passphrase on every container start | n/a |
 | `data/kdf.salt`                               | Public      | 16 bytes random, mode 0644; public by design             | n/a                 |
@@ -43,6 +44,10 @@ disabled by default; opting in requires presenting an auth token.
 | Session token counters                        | Internal    | in-memory                                                 | `/api/usage` (auth) |
 
 > **Note on `data/audit.jsonl`:** The file is deliberately plaintext and append-only. The passphrase is the single root of trust; if audit logs were also encrypted, a lost passphrase would destroy the forensic record needed for incident response. An attacker with disk access can read it; an attacker who steals only the encrypted DBs cannot. Operators concerned about audit-log confidentiality should rely on FileVault as defense in depth.
+
+## TTS egress
+
+Fish Audio was the only TTS path pre-wave-1. As of `openclaw_ports/tts_local_cli` (MIT, ported from OpenClaw), macOS host installs default to local `say` for TTS — no third-party egress for the audio. The Docker container still falls back to Fish Audio because Linux lacks `say`. Provider chosen by vault key `TTS_PROVIDER` ∈ {auto, local_cli, fish_audio}; default 'auto' tries local first, falls back to Fish.
 
 ## What is intentionally NOT defended against
 - A user with a shell on the JARVIS host. The server runs as that user

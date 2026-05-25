@@ -47,6 +47,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
 | `suggestions.py`      | Proactive nudge generator                        |
 | `templates.py`        | Response templates                               |
 | `tracking.py`         | Per-event usage tracking                         |
+| `openclaw_ports/`     | Python ports of MIT-licensed OpenClaw extensions. See `openclaw_ports/NOTICE.md`. Currently: `tts_local_cli` (macOS `say` wrapper, replaces Fish Audio when host is macOS). |
 
 ## Startup sequence (vault unlock → ready)
 1. Server starts; LLM/TTS clients are **not** constructed yet.
@@ -65,8 +66,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
    conversation buffer. The response may contain `[ACTION:X]` tags.
 4. If an action tag is present, `actions.execute_action` dispatches it
    (e.g. `open_terminal`, `open_browser`, `open_claude_in_project`).
-5. The textual reply is sent to Fish Audio for TTS; the resulting MP3
-   bytes are base64-encoded and shipped over the WS as `{"type":"audio"}`.
+5. The textual reply is passed to `synthesize_speech`: `text → synthesize_speech → (TTS_PROVIDER dispatch → local CLI || Fish Audio) → bytes`. The resulting audio bytes are base64-encoded and shipped over the WS as `{"type":"audio"}`.
 6. Conversation buffer is rolled forward; old messages summarized.
 
 ## Persistence

@@ -1204,7 +1204,36 @@ _last_greeting_time: float = 0
 # ---------------------------------------------------------------------------
 
 async def synthesize_speech(text: str) -> Optional[bytes]:
-    """Generate speech audio from text using Fish Audio TTS."""
+    """Generate speech audio from text.
+
+    Provider chosen by vault key `TTS_PROVIDER`:
+      - "auto" (default): try macOS `say` via openclaw_ports.tts_local_cli;
+        fall back to Fish Audio if local TTS is unavailable or fails.
+      - "local_cli":      use only macOS `say`; return None on failure.
+      - "fish_audio":     skip local; go straight to Fish Audio.
+    """
+    from openclaw_ports import tts_local_cli
+
+    provider = (_vault_get("TTS_PROVIDER", "auto") or "auto").strip().lower()
+
+    # Local CLI path.
+    if provider in ("auto", "local_cli") and tts_local_cli.is_available():
+        try:
+            voice = _vault_get("TTS_VOICE", "Alex") or "Alex"
+            audio = await tts_local_cli.synthesize(text, voice=voice)
+            _session_tokens["tts_calls"] += 1
+            _append_usage_entry(0, 0, "tts")
+            return audio
+        except tts_local_cli.CLITTSError as e:
+            log.warning("local TTS failed: %s", e)
+            if provider == "local_cli":
+                return None
+            # auto: fall through to Fish Audio.
+    elif provider == "local_cli":
+        log.warning("TTS_PROVIDER=local_cli but local TTS unavailable; no audio")
+        return None
+
+    # Fish Audio path (unchanged behavior).
     fish_api_key = _vault_get("FISH_API_KEY")
     fish_voice_id = _vault_get("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")
     if not fish_api_key:
@@ -1229,9 +1258,8 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
                 _session_tokens["tts_calls"] += 1
                 _append_usage_entry(0, 0, "tts")
                 return response.content
-            else:
-                log.error(f"TTS error: {response.status_code}")
-                return None
+            log.error(f"TTS error: {response.status_code}")
+            return None
     except Exception as e:
         log.error(f"TTS error: {e}")
         return None
@@ -2690,6 +2718,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
+               "TTS_PROVIDER", "TTS_VOICE",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
     if body.key_name not in allowed:
         raise HTTPException(status_code=400, detail="key not allowed")
@@ -2775,6 +2804,8 @@ async def api_get_preferences():
         "user_name": vault_dict.get("USER_NAME", ""),
         "honorific": vault_dict.get("HONORIFIC", "sir"),
         "calendar_accounts": vault_dict.get("CALENDAR_ACCOUNTS", "auto"),
+        "tts_provider": vault_dict.get("TTS_PROVIDER", "auto"),
+        "tts_voice": vault_dict.get("TTS_VOICE", ""),
     }
 
 @app.post("/api/settings/preferences")

@@ -140,3 +140,29 @@ def test_anthropic_client_initialized_after_unlock(isolated_vault, monkeypatch):
     r = c.post("/api/auth/unlock", json={"passphrase": "pp"})
     assert r.status_code == 200
     assert server.anthropic_client is not None
+
+
+def test_settings_keys_accepts_tts_provider(isolated_vault, monkeypatch):
+    """Spec wave-1 port 1: TTS_PROVIDER and TTS_VOICE are in the allowlist."""
+    import server
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
+    c = _client()
+    isolated_vault.bootstrap("pp")
+    r = c.post("/api/auth/unlock", json={"passphrase": "pp"})
+    assert r.status_code == 200
+    token = r.json()["token"]
+    h = {"X-JARVIS-Token": token}
+
+    for key in ("TTS_PROVIDER", "TTS_VOICE"):
+        r = c.post(
+            "/api/settings/keys",
+            headers=h,
+            json={"key_name": key, "key_value": "test-value"},
+        )
+        assert r.status_code == 200, f"{key}: {r.status_code} {r.text}"
+
+    # Verify by re-opening the vault in this thread and reading settings.
+    isolated_vault.lock()
+    sess = isolated_vault.unlock("pp")
+    assert sess.settings.get("TTS_PROVIDER") == "test-value"
+    assert sess.settings.get("TTS_VOICE") == "test-value"

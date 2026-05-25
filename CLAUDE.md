@@ -64,6 +64,7 @@ Five project-specific personas live in `.claude/agents/`. Use them per this tabl
 | Before committing any change with ≥30 LOC diff, or any change that touched the security-sensitive list above | `code-reviewer`. |
 | Before claiming "tests pass," "ready to merge," or creating a PR | `test-runner` (separate identity, no synthesis). |
 | Task spans multiple categories OR is unclear which persona owns it OR the user asks for "a full review" | `controller`. It picks and sequences. |
+| Editing any file under `openclaw_ports/` | `code-reviewer` verifies the per-file attribution header is present and `NOTICE.md` is up to date. |
 | Routine work (docs typos, README edits, comment-only changes) | No persona. Proceed directly. |
 
 ### Principles

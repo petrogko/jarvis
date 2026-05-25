@@ -8,16 +8,15 @@ Living tracker for in-flight and pending work. Each entry: short rationale + sta
 
 ## Priority queue (next session)
 
-### P3 — Privacy: local Whisper STT + macOS `say` TTS
-**Status:** proposed
+### P3a — Privacy: local Whisper STT
+**Status:** proposed (TTS half shipped as P11 wave-1 — see Done below)
 **Persona routing:** `software-architect` (touches voice-loop trust boundary; STT moves from browser→backend) → implementation → review/test.
 
-**Why:** today Chrome Web Speech sends audio to Google; Fish Audio receives JARVIS's response text. Both eliminated by going local.
+**Why:** today Chrome Web Speech sends audio to Google. Eliminated by going local.
 
 **Sketch:**
-- **TTS:** swap Fish Audio call site (`server.py` ~line 1211–1220) for macOS `say -o /tmp/jarvis.aiff -v <voice>` → return audio bytes. Host-only path; Docker container can't run `say`. Document the fallback.
 - **STT:** frontend captures raw PCM via MediaRecorder → POSTs to `/api/stt` → backend runs `faster-whisper` or `whisper.cpp` (small or base model). Adds a Python dep — audit.
-- Voice fidelity drops (no MCU-JARVIS Fish voice); user has accepted this trade.
+- Voice fidelity for TTS: already resolved by `tts_local_cli` (see Done below).
 
 ---
 
@@ -115,6 +114,7 @@ _(none — vault branch `feat/ui-config-encrypted-2026-05` is in review)_
 
 ## Done (recent)
 
+- **P11 wave-1 port 1 (= P3 privacy win):** `tts_local_cli` ported under `openclaw_ports/` (MIT, attributed to OpenClaw commit `125d82cab2952f87f532106a368d54e526141026`). macOS host now uses local `say` for TTS by default; Fish Audio remains as automatic fallback. New vault keys: `TTS_PROVIDER`, `TTS_VOICE`. Eliminates third-party TTS egress on macOS.
 - **P1 + P2** merged into a single rollout in `feat/ui-config-encrypted-2026-05`: SQLCipher-encrypted dual-DB vault (Argon2id KDF), UI lock-screen, safe legacy migration, auth tokens moved to vault, settings + memory endpoints routed through vault. (P1+P2 merged into a single rollout in feat/ui-config-encrypted-2026-05.)
 - 5-persona dev-session infrastructure + tripwire hook + CLAUDE.md routing (PR #9, branch `feat/personas-design-2026-05`)
 - Goal-drift integration test (same PR)

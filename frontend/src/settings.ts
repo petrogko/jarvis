@@ -30,6 +30,8 @@ interface PreferencesResponse {
   user_name: string;
   honorific: string;
   calendar_accounts: string;
+  tts_provider: string;
+  tts_voice: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +109,26 @@ function buildPanelHTML(): string {
             <div class="settings-input-row">
               <input type="text" id="input-fish-voice-id" placeholder="612b878b113047d9a770c069c8b4fdfe" />
               <button class="settings-btn" id="btn-save-voice-id">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>TTS Provider</label>
+            <div class="settings-input-row">
+              <select id="input-tts-provider">
+                <option value="auto">Auto (local first, Fish fallback)</option>
+                <option value="local_cli">Local CLI only (macOS say)</option>
+                <option value="fish_audio">Fish Audio only</option>
+              </select>
+              <button class="settings-btn" id="btn-save-tts-provider">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>TTS Voice</label>
+            <div class="settings-input-row">
+              <input type="text" id="input-tts-voice" placeholder="Alex" />
+              <button class="settings-btn" id="btn-save-tts-voice">Save</button>
             </div>
           </div>
 
@@ -244,9 +266,13 @@ async function loadPreferences() {
     const nameEl = document.getElementById("input-user-name") as HTMLInputElement;
     const honEl = document.getElementById("input-honorific") as HTMLSelectElement;
     const calEl = document.getElementById("input-calendar-accounts") as HTMLTextAreaElement;
+    const ttsProviderEl = document.getElementById("input-tts-provider") as HTMLSelectElement;
+    const ttsVoiceEl = document.getElementById("input-tts-voice") as HTMLInputElement;
     if (nameEl) nameEl.value = prefs.user_name || "";
     if (honEl) honEl.value = prefs.honorific || "sir";
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
+    if (ttsProviderEl) ttsProviderEl.value = prefs.tts_provider || "auto";
+    if (ttsVoiceEl) ttsVoiceEl.value = prefs.tts_voice || "";
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
   }
@@ -276,6 +302,20 @@ function wireEvents() {
     const voiceId = (document.getElementById("input-fish-voice-id") as HTMLInputElement).value.trim();
     if (voiceId) {
       await apiPost("/api/settings/keys", { key_name: "FISH_VOICE_ID", key_value: voiceId });
+    }
+  });
+
+  // Save TTS provider
+  document.getElementById("btn-save-tts-provider")?.addEventListener("click", async () => {
+    const provider = (document.getElementById("input-tts-provider") as HTMLSelectElement).value;
+    await apiPost("/api/settings/keys", { key_name: "TTS_PROVIDER", key_value: provider });
+  });
+
+  // Save TTS voice
+  document.getElementById("btn-save-tts-voice")?.addEventListener("click", async () => {
+    const voice = (document.getElementById("input-tts-voice") as HTMLInputElement).value.trim();
+    if (voice) {
+      await apiPost("/api/settings/keys", { key_name: "TTS_VOICE", key_value: voice });
     }
   });
 
