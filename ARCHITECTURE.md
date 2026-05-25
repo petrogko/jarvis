@@ -14,8 +14,8 @@ etc. All macOS integrations are AppleScript via `osascript`.
 ## Trust boundaries
 1. **Network → server.** Loopback bypasses auth; non-loopback requires
    `X-JARVIS-Token`. CORS allowlisted to known frontend origins.
-2. **Server → LLM (Anthropic).** TLS; API key from env.
-3. **Server → Fish Audio.** TLS; API key from env.
+2. **Server → LLM (Anthropic).** TLS; API key from vault.
+3. **Server → Fish Audio.** TLS; API key from vault.
 4. **Server → macOS apps.** `osascript` argv-only (no source
    interpolation); shell-exec call sites validated by `_assert_safe_path`.
 5. **Server → Claude Code subprocess.** Spawned via `claude -p`. Inherits
@@ -26,6 +26,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
 | File                  | Role                                             |
 |-----------------------|--------------------------------------------------|
 | `server.py`           | FastAPI app, WS handler, LLM glue, REST endpoints |
+| `vault.py`            | SQLCipher session manager; single point of at-rest encryption for secrets and memory. Owner of the master key; zeroed on lock. |
 | `auth.py`             | Local-token auth middleware + WS gate            |
 | `actions.py`          | Terminal/Browser/Claude-Code launchers           |
 | `calendar_access.py`  | Apple Calendar bulk read via AppleScript         |
@@ -47,6 +48,15 @@ etc. All macOS integrations are AppleScript via `osascript`.
 | `templates.py`        | Response templates                               |
 | `tracking.py`         | Per-event usage tracking                         |
 
+## Startup sequence (vault unlock → ready)
+1. Server starts; LLM/TTS clients are **not** constructed yet.
+2. UI presents the lock-screen; user supplies passphrase.
+3. `vault.py` derives the master key via Argon2id (256 MiB / t=3 / p=4),
+   opens `data/secrets.db` and `data/jarvis.db` (both SQLCipher), reads
+   secrets into memory.
+4. LLM and TTS clients are constructed from vault-held keys.
+5. Voice loop becomes available.
+
 ## Voice → response sequence (happy path)
 1. Browser captures speech, sends `{"type":"transcript","text":...,"isFinal":true}`.
 2. `server.voice_handler` builds context: memory recall, calendar
@@ -61,12 +71,13 @@ etc. All macOS integrations are AppleScript via `osascript`.
 
 ## Persistence
 
-| Path                       | Purpose                                       |
-|----------------------------|-----------------------------------------------|
-| `.env`                     | API keys (gitignored)                         |
-| `data/.local_token`        | Auth token (gitignored, mode 0600)            |
-| `data/*.jsonl`             | Usage telemetry, session history (gitignored) |
-| `*.db`                     | SQLite memory (gitignored)                    |
+| Path                       | Purpose                                                          |
+|----------------------------|------------------------------------------------------------------|
+| `.env`                     | ~~API keys~~ **REMOVED** — secrets now live in `data/secrets.db` |
+| `data/secrets.db`          | SQLCipher DB — API keys, auth token, UI preferences             |
+| `data/jarvis.db`           | SQLCipher DB — long-term memory, tasks (was plaintext SQLite)   |
+| `data/kdf.salt`            | 16-byte random KDF salt, mode 0644, public by design            |
+| `data/*.jsonl`             | Usage telemetry, session history, audit log (gitignored)        |
 
 ## Not yet documented (drift to close)
 - The exact dispatch table inside `dispatch_registry.py`.
@@ -78,3 +89,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
 
 If you change any boundary above (especially #1, #4, or #5), update
 this file in the same PR.
+
+## Persona Routing
+
+See the Persona Routing section in `CLAUDE.md` and the design at `docs/superpowers/specs/2026-05-21-personas-design.md`. Personas are dev-session-layer review tools; they do not run in JARVIS's voice loop.

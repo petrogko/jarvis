@@ -1,0 +1,79 @@
+# JARVIS — local Docker Compose for the backend.
+#
+# Hard isolation guarantees:
+#   - Project name `jarvis` — every resource scoped to this prefix. Running
+#     `docker compose -p jarvis down` only touches JARVIS, never your other
+#     stacks (e.g. magistrel-*).
+#   - Custom bridge network `jarvis_net` — no shared network with other
+#     compose projects.
+#   - Loopback host bind (`127.0.0.1:8340`) — not exposed on your LAN.
+#
+# Egress: the image only ever talks to api.anthropic.com and api.fish.audio.
+# See docs/DOCKER.md for hardening notes (sidecar egress proxy, etc.).
+
+name: jarvis
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jarvis-backend:local
+    container_name: jarvis-backend
+    restart: unless-stopped
+
+    # Loopback bind on the host — same posture as `python server.py` default.
+    ports:
+      - "127.0.0.1:8340:8340"
+
+    # .env is no longer auto-loaded at compose boot — secrets live in the
+    # encrypted vault under data/. To bootstrap on first run, optionally
+    # mount an .env at /app/.env.bootstrap (read-only) and JARVIS will
+    # import its values into the vault on the first successful unlock,
+    # then delete the file. Without this mount, enter keys via the UI.
+    env_file: []
+    # volumes:
+    #   - ./.env:/app/.env.bootstrap:ro   # uncomment for first-boot import
+
+    environment:
+      DO_NOT_TRACK: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      ANTHROPIC_LOG_LEVEL: "warning"
+      # Auth token now lives in the vault; do not set JARVIS_TOKEN_REQUIRED.
+
+    # Persistent state lives on the host (audit log, memory db, token).
+    # Mounted read-write so the container can write; nothing else is shared.
+    volumes:
+      - ./data:/app/data:rw
+
+    # Resource caps — keeps a runaway loop from starving your magistrel
+    # containers on the same Docker host.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+
+    # Drop every Linux capability we don't need. JARVIS is a pure
+    # network/CPU workload; no raw sockets, no privileged ops.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # SQLite needs to write under /app/data
+
+    # Isolated network. NOT joined to any external network.
+    networks:
+      - jarvis_net
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8340/api/health', timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  jarvis_net:
+    name: jarvis_net
+    driver: bridge

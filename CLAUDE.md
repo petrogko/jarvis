@@ -51,3 +51,36 @@ When a user clones this repo and starts Claude Code, help them:
 - AppleScript for all macOS integrations (no OAuth needed)
 - Read-only for Mail (safety by design)
 - SQLite for all local data storage
+
+## Persona Routing
+
+Five project-specific personas live in `.claude/agents/`. Use them per this table. The architecture is documented in `docs/superpowers/specs/2026-05-21-personas-design.md`.
+
+| Task pattern | Routing |
+|---|---|
+| Editing `auth.py`, `untrusted_content.py`, `claude_pool.py`, `claude_runner.py`, `cwd_allowlist.py`, `audit_log.py`, `file_perms.py` | Invoke `security-advisor` BEFORE the edit. Apply its findings. |
+| Editing `server.py` lines that match `osascript`, `claude -p`, `subprocess`, `JARVIS_SYSTEM_PROMPT`, `extract_action`, or any `*_access.py` AppleScript builder | `security-advisor` first. |
+| New module, removing a module, changing trust boundaries, refactoring across 3+ files | `software-architect` first. |
+| Before committing any change with ≥30 LOC diff, or any change that touched the security-sensitive list above | `code-reviewer`. |
+| Before claiming "tests pass," "ready to merge," or creating a PR | `test-runner` (separate identity, no synthesis). |
+| Task spans multiple categories OR is unclear which persona owns it OR the user asks for "a full review" | `controller`. It picks and sequences. |
+| Routine work (docs typos, README edits, comment-only changes) | No persona. Proceed directly. |
+
+### Principles
+
+1. **Read-only personas, main session applies.** Personas produce reports. The main session reads them and Edits.
+2. **Pre-commit gates are mandatory.** `code-reviewer` + `test-runner` before every PR. Branch protection enforces CI; this adds the human-judgment layer.
+3. **The controller is for ambiguity, not bypass.** If the table says `security-advisor` first, the controller honors that.
+
+### Membrane (tripwire only)
+
+These three files trigger a PostToolUse advisory warning on Edit:
+- `SECURITY.md`
+- `ARCHITECTURE.md`
+- `auth.py`
+
+The warning is a tripwire, not a block. The hard gate is branch protection + CI + the code-reviewer persona in this routing.
+
+### Cost discipline
+
+Opus calls are not free. The rule is "invoke before the edit," but the advisor's output gets cached *in the session*: for follow-ups in the same session, the main session reuses the cached judgment unless something material changed.

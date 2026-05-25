@@ -14,25 +14,40 @@ import json
 import logging
 import sqlite3
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
 
 log = logging.getLogger("jarvis.memory")
 
-DB_PATH = Path(__file__).parent / "data" / "jarvis.db"
 
+def _get_conn() -> sqlite3.Connection:
+    """Return the SQLCipher connection from the unlocked vault session.
 
-def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    The connection is opened and keyed by vault.unlock(); this module never
+    opens its own SQLite file.  row_factory is applied here on every call so
+    all callers get sqlite3.Row results regardless of vault internals.
+
+    On first access after unlock the schema tables are created (idempotent).
+
+    Raises VaultLockedError if the vault is locked.
+    """
+    import vault
+    sess = vault.session()
+    if sess is None:
+        raise vault.VaultLockedError("memory.py called while vault is locked")
+    conn = sess.memory_conn
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # Lazy schema init — runs once per unlock (tracked on the session object).
+    if not getattr(sess, "_memory_schema_ready", False):
+        _init_schema(conn)
+        sess._memory_schema_ready = True
     return conn
 
 
-def init_db():
-    """Create tables if they don't exist."""
-    conn = _get_db()
+# Keep _get_db as an internal alias so internal callers are consistent.
+_get_db = _get_conn
+
+
+def _init_schema(conn) -> None:
+    """Execute CREATE TABLE IF NOT EXISTS DDL on *conn*. Private — do not call directly."""
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,8 +100,22 @@ def init_db():
             content='notes', content_rowid='id'
         );
     """)
-    conn.close()
-    log.info("Memory database initialized")
+    conn.commit()
+    log.info("Memory database schema initialized")
+
+
+def create_schema() -> None:
+    """Create tables if they don't exist (idempotent — safe to call multiple times).
+
+    Requires the vault to be unlocked.  Normally called automatically on first
+    access via _get_conn(); exposed publicly so callers can force initialization
+    immediately after vault.unlock() if desired.
+    """
+    _init_schema(_get_conn())
+
+
+# Backward-compat alias used by server.py and tests that called init_db().
+init_db = create_schema
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +136,6 @@ def remember(content: str, mem_type: str = "fact", source: str = "", importance:
         (mem_id, content, mem_type, source)
     )
     conn.commit()
-    conn.close()
     log.info(f"Stored memory [{mem_type}]: {content[:60]}")
     return mem_id
 
@@ -149,7 +177,6 @@ def recall(query: str, limit: int = 5) -> list[dict]:
             (time.time(), r["id"])
         )
     conn.commit()
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -159,7 +186,6 @@ def get_recent_memories(limit: int = 10) -> list[dict]:
     results = conn.execute(
         "SELECT * FROM memories ORDER BY created_at DESC LIMIT ?", (limit,)
     ).fetchall()
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -169,7 +195,6 @@ def get_important_memories(limit: int = 10) -> list[dict]:
     results = conn.execute(
         "SELECT * FROM memories ORDER BY importance DESC, access_count DESC LIMIT ?", (limit,)
     ).fetchall()
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -194,7 +219,6 @@ def create_task(title: str, description: str = "", priority: str = "medium",
         (task_id, title, description, project, "")
     )
     conn.commit()
-    conn.close()
     log.info(f"Created task [{priority}]: {title}")
     return task_id
 
@@ -213,7 +237,6 @@ def get_open_tasks(project: str = None) -> list[dict]:
             "SELECT * FROM tasks WHERE status IN ('open','in_progress') ORDER BY "
             "CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, due_date"
         ).fetchall()
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -225,7 +248,6 @@ def get_tasks_for_date(date_str: str) -> list[dict]:
         "CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, due_time",
         (date_str,)
     ).fetchall()
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -237,7 +259,6 @@ def complete_task(task_id: int):
         (time.time(), task_id)
     )
     conn.commit()
-    conn.close()
 
 
 def search_tasks(query: str, limit: int = 10) -> list[dict]:
@@ -255,7 +276,6 @@ def search_tasks(query: str, limit: int = 10) -> list[dict]:
         """, (fts_query, limit)).fetchall()
     except Exception:
         results = []
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -277,7 +297,6 @@ def create_note(content: str, title: str = "", topic: str = "", tags: list[str] 
         (note_id, title, content, topic)
     )
     conn.commit()
-    conn.close()
     log.info(f"Created note: {title or content[:40]}")
     return note_id
 
@@ -297,7 +316,6 @@ def search_notes(query: str, limit: int = 10) -> list[dict]:
         """, (fts_query, limit)).fetchall()
     except Exception:
         results = []
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -308,7 +326,6 @@ def get_notes_by_topic(topic: str) -> list[dict]:
         "SELECT * FROM notes WHERE topic LIKE ? ORDER BY updated_at DESC",
         (f"%{topic}%",)
     ).fetchall()
-    conn.close()
     return [dict(r) for r in results]
 
 
@@ -446,5 +463,5 @@ async def extract_memories(user_text: str, jarvis_response: str, anthropic_clien
     return []
 
 
-# Initialize on import
-init_db()
+# Schema is initialized lazily on first _get_conn() call after vault.unlock().
+# No module-level DB access — vault doesn't exist at import time.
