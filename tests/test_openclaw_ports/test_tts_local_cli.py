@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -58,3 +59,66 @@ def test_is_available_false_if_say_missing(monkeypatch):
     monkeypatch.setattr(tts_local_cli.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(tts_local_cli.shutil, "which", lambda name: None)
     assert tts_local_cli.is_available() is False
+
+
+class _FakeProc:
+    def __init__(self, returncode: int = 0, audio_bytes: bytes = b"AAC-PAYLOAD"):
+        self.returncode = returncode
+        self._audio_bytes = audio_bytes
+
+    async def communicate(self):
+        return (b"", b"")
+
+    async def wait(self):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+async def test_synthesize_happy_path(monkeypatch, tmp_path):
+    """`synthesize` writes the text via `say`, reads back the M4A bytes."""
+    captured_argv: list[list[str]] = []
+
+    async def fake_create_subprocess_exec(*argv, **kwargs):
+        captured_argv.append(list(argv))
+        # Simulate `say` writing the output file.
+        # argv: [SAY_BINARY, "-v", voice, "-o", outpath, "--file-format=m4af",
+        #        "--data-format=aac", "--", text]
+        outpath = Path(argv[4])
+        outpath.write_bytes(b"AAC-PAYLOAD")
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(
+        tts_local_cli.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(tts_local_cli, "_tempdir", lambda: tmp_path)
+    monkeypatch.setattr(tts_local_cli, "is_available", lambda: True)
+
+    audio = await tts_local_cli.synthesize("hello world", voice="Alex", timeout_s=2.0)
+    assert audio == b"AAC-PAYLOAD"
+    # argv must include the safety-critical separators and flags.
+    argv = captured_argv[0]
+    assert argv[0] == tts_local_cli.SAY_BINARY
+    assert "-v" in argv and "Alex" in argv
+    assert "-o" in argv
+    assert "--file-format=m4af" in argv and "--data-format=aac" in argv
+    # Text is passed via argv after `--` so no shell interpolation.
+    assert "--" in argv
+    assert argv[-1] == "hello world"
+
+
+async def test_synthesize_raises_unavailable_off_macos(monkeypatch):
+    monkeypatch.setattr(tts_local_cli, "is_available", lambda: False)
+    with pytest.raises(tts_local_cli.CLITTSUnavailable):
+        await tts_local_cli.synthesize("anything")
+
+
+async def test_synthesize_raises_on_nonzero_exit(monkeypatch, tmp_path):
+    async def fake_proc(*argv, **kwargs):
+        return _FakeProc(returncode=1)
+    monkeypatch.setattr(tts_local_cli.asyncio, "create_subprocess_exec", fake_proc)
+    monkeypatch.setattr(tts_local_cli, "_tempdir", lambda: tmp_path)
+    monkeypatch.setattr(tts_local_cli, "is_available", lambda: True)
+    with pytest.raises(tts_local_cli.CLITTSError, match="exit 1"):
+        await tts_local_cli.synthesize("hello", voice="Alex", timeout_s=2.0)

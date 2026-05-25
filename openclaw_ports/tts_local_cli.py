@@ -49,6 +49,11 @@ def is_available() -> bool:
     return shutil.which(SAY_BINARY) is not None
 
 
+def _tempdir() -> Path:
+    """Return the directory to use for temp output files. Overridable in tests."""
+    return Path(tempfile.gettempdir())
+
+
 async def synthesize(
     text: str,
     voice: str = DEFAULT_VOICE,
@@ -56,6 +61,54 @@ async def synthesize(
 ) -> bytes:
     """Synthesize ``text`` to AAC/M4A audio bytes using macOS `say`.
 
-    Implemented in T4–T6.
+    Raises:
+        CLITTSUnavailable: when `say` is not present.
+        CLITTSError: on non-zero exit, missing output file, or empty text.
     """
-    raise NotImplementedError
+    if not is_available():
+        raise CLITTSUnavailable("macOS `say` binary not found")
+
+    if not text or not text.strip():
+        raise CLITTSError("text is empty")
+
+    # Use a unique temp file name in the tempdir so concurrent calls don't collide.
+    with tempfile.NamedTemporaryFile(
+        prefix="jarvis-tts-", suffix=".m4a", dir=str(_tempdir()), delete=False
+    ) as tf:
+        outpath = Path(tf.name)
+
+    try:
+        # All untrusted values (voice, text) flow through argv AFTER `--`,
+        # never through the shell. No string interpolation in argv.
+        argv = [
+            SAY_BINARY,
+            "-v", voice,
+            "-o", str(outpath),
+            "--file-format=m4af",
+            "--data-format=aac",
+            "--",
+            text,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise CLITTSError(f"`say` timed out after {timeout_s}s")
+
+        if proc.returncode != 0:
+            raise CLITTSError(f"`say` exit {proc.returncode}")
+
+        if not outpath.exists() or outpath.stat().st_size == 0:
+            raise CLITTSError("`say` produced no output")
+
+        return outpath.read_bytes()
+    finally:
+        try:
+            outpath.unlink()
+        except FileNotFoundError:
+            pass
