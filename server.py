@@ -2175,7 +2175,10 @@ async def voice_handler(ws: WebSocket):
         {"type": "task_spawned", "task_id": "...", "prompt": "..."}
         {"type": "task_complete", "task_id": "...", "summary": "..."}
     """
-    if not websocket_authorized(ws, LOCAL_TOKEN, trust_loopback=TRUST_LOOPBACK):
+    # Resolve the live token from the vault per-connect — LOCAL_TOKEN was a
+    # startup snapshot captured while the vault was locked (so empty).
+    from auth import load_or_create_token as _live_token
+    if not websocket_authorized(ws, _live_token(), trust_loopback=TRUST_LOOPBACK):
         log.warning("ws: rejected upgrade from %s (no/bad token)", ws.client.host if ws.client else "?")
         await ws.close(code=4401)
         return

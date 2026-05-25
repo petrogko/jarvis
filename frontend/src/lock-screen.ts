@@ -53,8 +53,13 @@ function renderFirstRun(container: HTMLElement): Promise<void> {
       if (!r.ok) { err.textContent = `Error ${r.status}`; return; }
       const r2 = await postJson("/api/auth/unlock", { passphrase: pp1 });
       if (!r2.ok) { err.textContent = `Unlock failed: ${r2.status}`; return; }
-      const body2 = (await r2.json()) as UnlockResponse;
-      if (body2.token) setToken(body2.token);
+      try {
+        const body2 = (await r2.json()) as UnlockResponse;
+        if (!body2.token) { err.textContent = "Server did not return a token — try again"; return; }
+        setToken(body2.token);
+      } catch {
+        err.textContent = "Unexpected response from server"; return;
+      }
       resolve();
     };
   });
@@ -79,8 +84,13 @@ function renderLocked(container: HTMLElement): Promise<void> {
       if (r.status === 401) { err.textContent = "Wrong passphrase"; return; }
       if (r.status === 429) { err.textContent = "Slow down — too many attempts"; return; }
       if (!r.ok) { err.textContent = `Error ${r.status}`; return; }
-      const body = (await r.json()) as UnlockResponse;
-      if (body.token) setToken(body.token);
+      try {
+        const body = (await r.json()) as UnlockResponse;
+        if (!body.token) { err.textContent = "Server did not return a token — try again"; return; }
+        setToken(body.token);
+      } catch {
+        err.textContent = "Unexpected response from server"; return;
+      }
       resolve();
     };
     btn.onclick = tryUnlock;
