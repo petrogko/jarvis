@@ -26,17 +26,20 @@ services:
     ports:
       - "127.0.0.1:8340:8340"
 
-    # Only the explicit, expected env. Nothing inherited from the host shell.
-    env_file:
-      - .env
+    # .env is no longer auto-loaded at compose boot — secrets live in the
+    # encrypted vault under data/. To bootstrap on first run, optionally
+    # mount an .env at /app/.env.bootstrap (read-only) and JARVIS will
+    # import its values into the vault on the first successful unlock,
+    # then delete the file. Without this mount, enter keys via the UI.
+    env_file: []
+    # volumes:
+    #   - ./.env:/app/.env.bootstrap:ro   # uncomment for first-boot import
+
     environment:
-      # Telemetry kill-switches (defense in depth — none of our deps phone
-      # home, but make it explicit so a future bump can't sneak one in).
       DO_NOT_TRACK: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       ANTHROPIC_LOG_LEVEL: "warning"
-      # JARVIS configuration (override via .env if you prefer).
-      JARVIS_TOKEN_REQUIRED: "1"
+      # Auth token now lives in the vault; do not set JARVIS_TOKEN_REQUIRED.
 
     # Persistent state lives on the host (audit log, memory db, token).
     # Mounted read-write so the container can write; nothing else is shared.
