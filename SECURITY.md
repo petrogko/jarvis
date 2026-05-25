@@ -12,8 +12,14 @@ disabled by default; opting in requires presenting an auth token.
   `--host 0.0.0.0` (or any other interface) explicitly.
 - **Auth:** Loopback requests bypass the token (single-user case).
   Non-loopback requests must present `X-JARVIS-Token` header or
-  `?token=...` query param. Token is generated on first start and
-  persisted to `data/.local_token` with mode 0600.
+  `?token=...` query param. Token is generated in-process on first
+  request after vault unlock and stored in `data/secrets.db`
+  (SQLCipher). `data/.local_token` no longer exists.
+- **Secrets at rest:** API keys live in `data/secrets.db` (SQLCipher).
+  Bootstrap on first run via the UI lock-screen; the passphrase never
+  touches disk — only the Argon2id-derived master key is held in
+  memory for the lifetime of the session. The vault is locked across
+  restarts; the voice loop is unavailable until unlocked.
 - **CORS:** Allowlist only (`http://localhost:5173` and `http://127.0.0.1:5173`
   by default). Override with `JARVIS_CORS_ORIGINS` (comma-separated).
 - **`/api/fix-self`:** Disabled unless `JARVIS_ENABLE_FIX_SELF=1` is set,
@@ -23,14 +29,20 @@ disabled by default; opting in requires presenting an auth token.
 
 ## Data classification
 
-| Data                                | Class       | At rest          | In transit          |
-|-------------------------------------|-------------|------------------|---------------------|
-| `ANTHROPIC_API_KEY`, `FISH_API_KEY` | Secret      | `.env` (gitignored) | TLS to provider     |
-| `data/.local_token`                 | Secret      | `data/`, mode 0600 | header/query        |
-| Calendar / Mail / Notes content     | PII         | OS apps           | osascript stdout    |
-| Memory database (`*.db`)            | PII         | local SQLite      | n/a                 |
-| Cost telemetry (`data/usage.jsonl`) | Internal    | local             | n/a                 |
-| Session token counters              | Internal    | in-memory         | `/api/usage` (auth) |
+| Data                                          | Class       | At rest                                                   | In transit          |
+|-----------------------------------------------|-------------|-----------------------------------------------------------|---------------------|
+| `ANTHROPIC_API_KEY`, `FISH_API_KEY`, `FISH_VOICE_ID` | Secret | `data/secrets.db` (SQLCipher, Argon2id-derived key) | TLS to provider     |
+| `auth_token`                                  | Secret      | `data/secrets.db` (was `data/.local_token` file)         | header/query        |
+| `data/secrets.db`                             | Secret      | SQLCipher, key derived via Argon2id (256 MiB / t=3 / p=4); unlocked by user passphrase on every container start | n/a |
+| `data/kdf.salt`                               | Public      | 16 bytes random, mode 0644; public by design             | n/a                 |
+| `data/jarvis.db` (memory + tasks)             | PII         | SQLCipher, same master key as `secrets.db`               | n/a                 |
+| `data/jarvis.db.pre-encrypt.bak`, `data/.env.bootstrap.pre-encrypt.bak` | Sensitive | Plaintext migration backups, mode 0600; auto-deleted on second successful unlock after migration | n/a |
+| `data/audit.jsonl`                            | Internal    | Deliberately plaintext — forensic preservation (see note below) | n/a       |
+| Calendar / Mail / Notes content               | PII         | OS apps                                                   | osascript stdout    |
+| Cost telemetry (`data/usage.jsonl`)           | Internal    | local                                                     | n/a                 |
+| Session token counters                        | Internal    | in-memory                                                 | `/api/usage` (auth) |
+
+> **Note on `data/audit.jsonl`:** The file is deliberately plaintext and append-only. The passphrase is the single root of trust; if audit logs were also encrypted, a lost passphrase would destroy the forensic record needed for incident response. An attacker with disk access can read it; an attacker who steals only the encrypted DBs cannot. Operators concerned about audit-log confidentiality should rely on FileVault as defense in depth.
 
 ## What is intentionally NOT defended against
 - A user with a shell on the JARVIS host. The server runs as that user
@@ -40,6 +52,14 @@ disabled by default; opting in requires presenting an auth token.
   affirmative choices.
 - Compromise of Apple Calendar/Mail/Notes themselves — read paths are
   read-only by design; write paths are limited to Notes creation.
+- **Passphrase loss equals permanent data loss.** There is no recovery
+  path. Keep an out-of-band backup of the passphrase.
+- **Remote brute-force when `--host 0.0.0.0` is used.** An attacker
+  with LAN access can attempt the unlock endpoint at the rate-limited
+  rate of 1 attempt / 2 seconds. The Argon2id cost makes each attempt
+  slow; passphrase strength is the load-bearing defense. The UI
+  enforces zxcvbn ≥ 3 at bootstrap as a guardrail, but that check is
+  client-side only.
 
 ## Subprocess sandboxing — `claude -p`
 
@@ -93,11 +113,18 @@ email the repo owner. Do not file public issues for unpatched
 vulnerabilities.
 
 ## Operator's checklist before exposing on LAN
-1. Run with `--host 0.0.0.0` (or specific interface).
-2. Capture the token printed at startup (also at `data/.local_token`).
-3. Configure the remote client to send `X-JARVIS-Token: <token>`
+1. **Set a strong passphrase on first run; the UI enforces zxcvbn ≥ 3.**
+2. **Keep an out-of-band backup of the passphrase. There is NO recovery.**
+3. Run with `--host 0.0.0.0` (or specific interface).
+4. Unlock the vault via the UI lock-screen on first run. The token is
+   then available via `/api/auth/state` (auth required); it is no
+   longer written to `data/.local_token`.
+5. Configure the remote client to send `X-JARVIS-Token: <token>`
    on REST and `?token=<token>` on the WebSocket URL.
-4. Restrict `JARVIS_CORS_ORIGINS` to the remote frontend origin only.
-5. Consider whether `/api/fix-self` should be enabled (default: no).
-6. Prefer HTTPS — drop `cert.pem`/`key.pem` next to `server.py` and
+6. Restrict `JARVIS_CORS_ORIGINS` to the remote frontend origin only.
+7. Consider whether `/api/fix-self` should be enabled (default: no).
+8. Prefer HTTPS — drop `cert.pem`/`key.pem` next to `server.py` and
    the server auto-enables TLS.
+9. After the first unlock, the **second** successful unlock automatically
+   clears the plaintext migration backups (`*.pre-encrypt.bak`). You
+   can also clear them manually via the settings UI.
