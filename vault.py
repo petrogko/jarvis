@@ -170,11 +170,17 @@ def _derive_key(passphrase: str, salt: bytes) -> bytearray:
 
 
 def _apply_key(conn: sqlcipher.Connection, key: bytearray) -> None:
-    """Set the SQLCipher key and pin compatibility to 4.x (spec §6)."""
+    """Set the SQLCipher key and pin compatibility to 4.x (spec §6).
+
+    Also pins ``row_factory`` to pysqlcipher3's own Row class so callers
+    can rely on ``dict(row)``-style access — sqlite3.Row is incompatible
+    with pysqlcipher3 cursors (different C type).
+    """
     # Pass the key as a hex literal — pysqlcipher3's safest path.
     hex_key = bytes(key).hex()
     conn.execute(f"PRAGMA key = \"x'{hex_key}'\"")
     conn.execute("PRAGMA cipher_compatibility = 4")
+    conn.row_factory = sqlcipher.Row
 
 
 def bootstrap(passphrase: str) -> None:

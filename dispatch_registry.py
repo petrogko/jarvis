@@ -1,30 +1,39 @@
 """
 JARVIS Dispatch Registry — tracks all active and recent project builds/dispatches.
 
-Persists to SQLite so JARVIS always knows what he's working on,
-what just finished, and what the user is likely referring to.
+Persists to the vault's encrypted memory DB so JARVIS always knows what he's
+working on, what just finished, and what the user is likely referring to.
 """
 
 import logging
-import sqlite3
 import time
-from pathlib import Path
 
 log = logging.getLogger("jarvis.dispatch")
 
-DB_PATH = Path(__file__).parent / "data" / "jarvis.db"
+# Set on the unlocked VaultSession when the dispatches table has been ensured.
+# Cleared on lock — a fresh session re-runs the IF NOT EXISTS DDL.
+_SCHEMA_FLAG = "_dispatch_schema_ready"
 
 
-def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+def _get_conn():
+    """Return the live SQLCipher connection from the unlocked vault.
+
+    Lazily initializes the dispatches schema on first use after each unlock.
+    Raises VaultLockedError when the vault is locked — callers all sit behind
+    the vault-locked middleware so this should never trip in practice.
+    """
+    import vault
+    sess = vault.session()
+    if sess is None:
+        raise vault.VaultLockedError("dispatch_registry called while vault is locked")
+    if not getattr(sess, _SCHEMA_FLAG, False):
+        _init_dispatch_schema(sess.memory_conn)
+        setattr(sess, _SCHEMA_FLAG, True)
+    # row_factory is set centrally on the vault connection (pysqlcipher3.Row).
+    return sess.memory_conn
 
 
-def init_dispatch_db():
-    conn = _get_db()
+def _init_dispatch_schema(conn):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS dispatches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,16 +51,22 @@ def init_dispatch_db():
         CREATE INDEX IF NOT EXISTS idx_dispatch_status ON dispatches(status);
         CREATE INDEX IF NOT EXISTS idx_dispatch_updated ON dispatches(updated_at DESC);
     """)
-    conn.close()
+    conn.commit()
+
+
+def init_dispatch_db():
+    """Back-compat shim. Schema init is now lazy on first _get_conn() call."""
+    _get_conn()
 
 
 class DispatchRegistry:
     def __init__(self):
-        init_dispatch_db()
+        # Schema init is deferred to first use — vault is locked at server boot.
+        pass
 
     def register(self, project_name: str, project_path: str, prompt: str) -> int:
         """Register a new dispatch. Returns dispatch ID."""
-        conn = _get_db()
+        conn = _get_conn()
         now = time.time()
         cur = conn.execute(
             "INSERT INTO dispatches (project_name, project_path, original_prompt, status, created_at, updated_at) "
@@ -60,14 +75,13 @@ class DispatchRegistry:
         )
         dispatch_id = cur.lastrowid
         conn.commit()
-        conn.close()
         log.info(f"Registered dispatch #{dispatch_id}: {project_name}")
         return dispatch_id
 
     def update_status(self, dispatch_id: int, status: str,
                       response: str = None, summary: str = None):
         """Update dispatch status and optionally store response/summary."""
-        conn = _get_db()
+        conn = _get_conn()
         now = time.time()
         if response is not None:
             conn.execute(
@@ -83,40 +97,36 @@ class DispatchRegistry:
                 (status, now, dispatch_id)
             )
         conn.commit()
-        conn.close()
 
     def get_most_recent(self) -> dict | None:
         """Get the most recently updated dispatch."""
-        conn = _get_db()
+        conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM dispatches ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
-        conn.close()
         return dict(row) if row else None
 
     def get_active(self) -> list[dict]:
         """Get all pending/building dispatches."""
-        conn = _get_db()
+        conn = _get_conn()
         rows = conn.execute(
             "SELECT * FROM dispatches WHERE status IN ('pending','building','planning') "
             "ORDER BY updated_at DESC"
         ).fetchall()
-        conn.close()
         return [dict(r) for r in rows]
 
     def get_by_name(self, name: str) -> dict | None:
         """Fuzzy match dispatch by project name."""
-        conn = _get_db()
+        conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM dispatches WHERE project_name LIKE ? ORDER BY updated_at DESC LIMIT 1",
             (f"%{name}%",)
         ).fetchone()
-        conn.close()
         return dict(row) if row else None
 
     def get_recent_for_project(self, project_name: str, max_age_seconds: int = 300) -> dict | None:
         """Return the most recent completed dispatch for a project if within max_age."""
-        conn = _get_db()
+        conn = _get_conn()
         cutoff = time.time() - max_age_seconds
         row = conn.execute(
             "SELECT * FROM dispatches WHERE project_name LIKE ? AND status = 'completed' "
@@ -124,20 +134,26 @@ class DispatchRegistry:
             "ORDER BY completed_at DESC LIMIT 1",
             (f"%{project_name}%", cutoff)
         ).fetchone()
-        conn.close()
         return dict(row) if row else None
 
     def get_recent(self, limit: int = 5) -> list[dict]:
         """Get last N dispatches."""
-        conn = _get_db()
+        conn = _get_conn()
         rows = conn.execute(
             "SELECT * FROM dispatches ORDER BY updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
-        conn.close()
         return [dict(r) for r in rows]
 
     def format_for_prompt(self) -> str:
-        """Format active + recent dispatches as context for the LLM."""
+        """Format active + recent dispatches as context for the LLM.
+
+        Safe to call when vault is locked — returns a neutral string instead
+        of crashing. server.py calls this from voice-loop construction which
+        may run while still locked.
+        """
+        import vault
+        if vault.session() is None:
+            return "No active or recent dispatches."
         active = self.get_active()
         recent = self.get_recent(3)
 
