@@ -9,6 +9,7 @@ integration/ and is excluded from the default pytest collection.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from pathlib import Path
@@ -137,3 +138,37 @@ async def test_synthesize_raises_when_only_emojis(monkeypatch, tmp_path):
     monkeypatch.setattr(tts_local_cli, "_tempdir", lambda: tmp_path)
     with pytest.raises(tts_local_cli.CLITTSError, match="empty"):
         await tts_local_cli.synthesize("🎉🎉🎉", voice="Alex")
+
+
+class _SlowFakeProc:
+    """Simulates a `say` invocation that never exits."""
+    def __init__(self):
+        self.returncode = None
+        self.killed = False
+
+    async def wait(self):
+        # Sleep longer than any reasonable timeout — wait_for will cancel us.
+        await asyncio.sleep(60)
+        return 0
+
+    def kill(self):
+        self.killed = True
+
+
+async def test_synthesize_enforces_timeout(monkeypatch, tmp_path):
+    """If `say` hangs, synthesize() raises CLITTSError and kills the child."""
+    slow_proc = _SlowFakeProc()
+
+    async def fake_proc(*argv, **kwargs):
+        # Touch the output path so the not-exists branch doesn't mask the timeout.
+        outpath = Path(argv[4])
+        outpath.write_bytes(b"")
+        return slow_proc
+
+    monkeypatch.setattr(tts_local_cli.asyncio, "create_subprocess_exec", fake_proc)
+    monkeypatch.setattr(tts_local_cli, "_tempdir", lambda: tmp_path)
+    monkeypatch.setattr(tts_local_cli, "is_available", lambda: True)
+
+    with pytest.raises(tts_local_cli.CLITTSError, match="timed out"):
+        await tts_local_cli.synthesize("hello", voice="Alex", timeout_s=0.1)
+    assert slow_proc.killed is True
