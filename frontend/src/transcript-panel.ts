@@ -147,6 +147,19 @@ export function attachTranscript(socket: JarvisSocket): void {
 }
 
 // ---------------------------------------------------------------------------
+// Imperative push helpers — called by send-sites that can't use onMessage
+// (outgoing messages are never echoed back, so the WS listener misses them)
+// ---------------------------------------------------------------------------
+
+/**
+ * Push a USER line into the transcript immediately after socket.send().
+ * Call this from text-input.ts and the voice-input handler in main.ts.
+ */
+export function pushUserLine(text: string): void {
+  appendEntry("user", text);
+}
+
+// ---------------------------------------------------------------------------
 // Toggle helper (called from main.ts menu button)
 // ---------------------------------------------------------------------------
 

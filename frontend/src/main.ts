@@ -11,7 +11,8 @@ import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { awaitUnlock } from "./lock-screen";
 import { withAuthHeaders } from "./auth-token";
-import { attachTranscript, toggleTranscript } from "./transcript-panel";
+import { attachTranscript, toggleTranscript, pushUserLine } from "./transcript-panel";
+import { attachTextInput } from "./text-input";
 import "./style.css";
 
 (async () => {
@@ -62,6 +63,7 @@ import "./style.css";
 
   // Attach debug transcript panel — must happen before onMessage wiring below
   attachTranscript(socket);
+  attachTextInput(socket);
 
   function transition(newState: State) {
     if (newState === currentState) return;
@@ -93,8 +95,9 @@ import "./style.css";
     (text: string) => {
       // Cancel any current JARVIS response before sending new input
       audioPlayer.stop();
-      // User spoke — send transcript
+      // User spoke — send transcript and echo to conversation panel
       socket.send({ type: "transcript", text, isFinal: true });
+      pushUserLine(text);
       transition("thinking");
     },
     (msg: string) => {

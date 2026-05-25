@@ -1,0 +1,50 @@
+#text-input {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  width: min(640px, 80vw);
+}
+#text-input-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: rgba(15, 20, 28, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  border-radius: 999px;
+  padding: 6px 6px 6px 18px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+#text-input-field {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: rgba(234, 234, 234, 0.95);
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: 0.01em;
+  padding: 8px 4px;
+}
+#text-input-field::placeholder {
+  color: rgba(186, 214, 250, 0.45);
+}
+#text-input-send {
+  background: rgba(96, 165, 250, 0.18);
+  color: rgba(186, 214, 250, 0.95);
+  border: 1px solid rgba(96, 165, 250, 0.32);
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 120ms ease;
+}
+#text-input-send:hover {
+  background: rgba(96, 165, 250, 0.28);
+}
