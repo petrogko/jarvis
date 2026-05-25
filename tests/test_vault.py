@@ -21,6 +21,25 @@ import sys
 
 import pytest
 
+# Detect whether the installed pysqlcipher3/libsqlcipher was compiled with FTS5.
+# System apt packages on some distros omit -DSQLITE_ENABLE_FTS5.
+def _pysqlcipher_has_fts5() -> bool:
+    try:
+        from pysqlcipher3 import dbapi2 as _sc
+        _conn = _sc.connect(":memory:")
+        _conn.execute("PRAGMA key='probe'")
+        _conn.execute("CREATE VIRTUAL TABLE _fts5_probe USING fts5(x)")
+        _conn.close()
+        return True
+    except Exception:
+        return False
+
+_HAS_FTS5 = _pysqlcipher_has_fts5()
+requires_fts5 = pytest.mark.skipif(
+    not _HAS_FTS5,
+    reason="libsqlcipher on this system was not compiled with FTS5 support",
+)
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -202,6 +221,7 @@ def test_migrate_imports_memory_and_env(tmp_path, monkeypatch):
     assert (tmp_path / ".env.bootstrap.pre-encrypt.bak").exists()
 
 
+@requires_fts5
 def test_memory_module_uses_vault_connection(tmp_path, monkeypatch):
     monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
     monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
