@@ -122,3 +122,18 @@ async def test_synthesize_raises_on_nonzero_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(tts_local_cli, "is_available", lambda: True)
     with pytest.raises(tts_local_cli.CLITTSError, match="exit 1"):
         await tts_local_cli.synthesize("hello", voice="Alex", timeout_s=2.0)
+
+
+def test_strip_emojis_removes_pictographic():
+    """Ported from OpenClaw's stripEmojis — `say` chokes on raw emoji."""
+    assert tts_local_cli._strip_emojis("Hello 🌟 world 🎉") == "Hello world"
+    assert tts_local_cli._strip_emojis("👋") == ""
+    assert tts_local_cli._strip_emojis("plain ascii") == "plain ascii"
+
+
+async def test_synthesize_raises_when_only_emojis(monkeypatch, tmp_path):
+    """If the input collapses to empty after stripping, raise CLITTSError."""
+    monkeypatch.setattr(tts_local_cli, "is_available", lambda: True)
+    monkeypatch.setattr(tts_local_cli, "_tempdir", lambda: tmp_path)
+    with pytest.raises(tts_local_cli.CLITTSError, match="empty"):
+        await tts_local_cli.synthesize("🎉🎉🎉", voice="Alex")

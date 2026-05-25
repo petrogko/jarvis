@@ -30,6 +30,22 @@ SAY_BINARY: Final[str] = "/usr/bin/say"
 DEFAULT_VOICE: Final[str] = "Alex"
 DEFAULT_TIMEOUT_S: Final[float] = 30.0
 
+# Matches emoji presentation + extended pictographic + variation selectors.
+# Mirrors OpenClaw's regex (TypeScript: /[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu).
+_EMOJI_RE = re.compile(
+    "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F1E6-\U0001F1FF" "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emojis(text: str) -> str:
+    """Remove emoji/pictographic codepoints and collapse whitespace.
+
+    Ported from OpenClaw's stripEmojis (speech-provider.ts:87-92).
+    """
+    no_emoji = _EMOJI_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", no_emoji).strip()
+
 
 class CLITTSUnavailable(RuntimeError):
     """Raised when macOS `say` is not present (e.g. inside a Linux container)."""
@@ -68,8 +84,9 @@ async def synthesize(
     if not is_available():
         raise CLITTSUnavailable("macOS `say` binary not found")
 
-    if not text or not text.strip():
-        raise CLITTSError("text is empty")
+    cleaned = _strip_emojis(text)
+    if not cleaned:
+        raise CLITTSError("text is empty after stripping emojis")
 
     # Use a unique temp file name in the tempdir so concurrent calls don't collide.
     with tempfile.NamedTemporaryFile(
@@ -87,7 +104,7 @@ async def synthesize(
             "--file-format=m4af",
             "--data-format=aac",
             "--",
-            text,
+            cleaned,
         ]
         # Discard stdout/stderr — we don't read them, and PIPE without a drain
         # can deadlock if `say` ever fills the OS pipe buffer (~64 KiB on Linux).
