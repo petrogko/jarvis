@@ -11,6 +11,7 @@ import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { awaitUnlock } from "./lock-screen";
 import { withAuthHeaders } from "./auth-token";
+import { attachTranscript, toggleTranscript } from "./transcript-panel";
 import "./style.css";
 
 (async () => {
@@ -58,6 +59,9 @@ import "./style.css";
 
   const audioPlayer = createAudioPlayer();
   orb.setAnalyser(audioPlayer.getAnalyser());
+
+  // Attach debug transcript panel — must happen before onMessage wiring below
+  attachTranscript(socket);
 
   function transition(newState: State) {
     if (newState === currentState) return;
@@ -182,6 +186,7 @@ import "./style.css";
   const menuDropdown = document.getElementById("menu-dropdown")!;
   const btnRestart = document.getElementById("btn-restart")!;
   const btnFixSelf = document.getElementById("btn-fix-self")!;
+  const btnTranscriptToggle = document.getElementById("btn-transcript-toggle")!;
 
   btnMute.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -224,6 +229,14 @@ import "./style.css";
     // Activate work mode on the WebSocket session (JARVIS becomes Claude Code's voice)
     socket.send({ type: "fix_self" });
     statusEl.textContent = "entering work mode...";
+  });
+
+  // Transcript toggle button
+  btnTranscriptToggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menuDropdown.style.display = "none";
+    const isVisible = toggleTranscript();
+    btnTranscriptToggle.textContent = isVisible ? "Hide transcript" : "Show transcript";
   });
 
   // Settings button

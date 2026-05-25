@@ -1,0 +1,147 @@
+/**
+ * JARVIS — Debug Transcript Panel
+ *
+ * Scrollable side panel showing timestamped conversation log.
+ * Fixed to the right edge, full height minus header.
+ */
+
+#transcript-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 360px;
+  height: 100vh;
+  /* Offset controls (36px button + 16px top + 16px gap) so panel doesn't sit behind them */
+  padding-top: 68px;
+  padding-bottom: 16px;
+  padding-left: 16px;
+  padding-right: 16px;
+  background: rgba(5, 5, 8, 0.82);
+  border-left: 1px solid rgba(14, 165, 233, 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+#transcript-panel.hidden {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Header */
+.transcript-header {
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: rgba(14, 165, 233, 0.25);
+  font-weight: 400;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Scrollable log area */
+#transcript-log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Custom scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(14, 165, 233, 0.15) transparent;
+}
+
+#transcript-log::-webkit-scrollbar {
+  width: 3px;
+}
+
+#transcript-log::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#transcript-log::-webkit-scrollbar-thumb {
+  background: rgba(14, 165, 233, 0.2);
+  border-radius: 2px;
+}
+
+/* Individual entries */
+.transcript-entry {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.5;
+  animation: entry-fade-in 0.2s ease;
+}
+
+@keyframes entry-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.transcript-ts {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(14, 165, 233, 0.2);
+  white-space: nowrap;
+  user-select: none;
+  align-self: start;
+  padding-top: 1px;
+}
+
+.transcript-body {
+  word-break: break-word;
+}
+
+/* Speaker labels */
+.transcript-speaker {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+
+/* Color coding by speaker */
+.transcript-entry.user .transcript-speaker {
+  color: rgba(96, 165, 250, 0.8);  /* muted blue */
+}
+
+.transcript-entry.user .transcript-text {
+  color: rgba(186, 214, 250, 0.75);
+}
+
+.transcript-entry.jarvis .transcript-speaker {
+  color: rgba(251, 237, 199, 0.7); /* warm white/gold */
+}
+
+.transcript-entry.jarvis .transcript-text {
+  color: rgba(245, 238, 220, 0.65);
+}
+
+.transcript-entry.status .transcript-speaker {
+  color: rgba(100, 116, 139, 0.5); /* dim grey */
+}
+
+.transcript-entry.status .transcript-text {
+  color: rgba(100, 116, 139, 0.4);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* Empty state */
+.transcript-empty {
+  color: rgba(14, 165, 233, 0.15);
+  font-size: 11px;
+  font-style: italic;
+  text-align: center;
+  margin-top: 24px;
+  user-select: none;
+}
