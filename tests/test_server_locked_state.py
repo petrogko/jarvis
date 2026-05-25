@@ -117,3 +117,26 @@ def test_protected_endpoint_reachable_after_unlock(isolated_vault, monkeypatch):
     # Auth token is in the vault; client doesn't have it for this test. Expect
     # either 200 (if /api/settings/status is in _PUBLIC_PATHS) or 401 — NOT 423.
     assert r.status_code != 423
+
+
+def test_anthropic_client_initialized_after_unlock(isolated_vault, monkeypatch):
+    """Regression guard: after a successful unlock, the global anthropic_client
+    must be reconstructed using the unlocked vault's key. Reviewer found a
+    pre-fix bug where lifespan() ran while locked, leaving the client at None."""
+    import server
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
+    # Force the broken pre-unlock state.
+    server.anthropic_client = None
+
+    c = _client()
+    isolated_vault.bootstrap("pp")
+    # Stash a key in the vault so the post-unlock rebuild has something to use.
+    sess_temp = isolated_vault.unlock("pp")
+    sess_temp.settings.set("ANTHROPIC_API_KEY", "sk-ant-test-fake")
+    isolated_vault.lock()
+
+    # Now unlock through the API — this should rebuild the client.
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
+    r = c.post("/api/auth/unlock", json={"passphrase": "pp"})
+    assert r.status_code == 200
+    assert server.anthropic_client is not None

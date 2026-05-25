@@ -1500,7 +1500,7 @@ async def lifespan(application: FastAPI):
     if api_key:
         anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
     else:
-        log.warning("ANTHROPIC_API_KEY not set — LLM features disabled")
+        log.info("Vault locked at startup; Anthropic client initialization deferred until unlock")
     cached_projects = []
 
     # Start context refresh in a separate thread (never touches event loop)
@@ -1625,6 +1625,14 @@ async def api_auth_unlock(body: _PassphraseBody):
         _vault_mod.migrate_from_legacy(sess)
     except Exception as e:
         log.exception("migration failed: %s", e)
+    # Rebuild the LLM client now that the API key is reachable.
+    # lifespan() ran while the vault was locked and could not construct it.
+    global anthropic_client
+    if anthropic_client is None:
+        key = _vault_get("ANTHROPIC_API_KEY")
+        if key:
+            anthropic_client = anthropic.AsyncAnthropic(api_key=key)
+            log.info("Anthropic client initialized after vault unlock")
     return {"ok": True}
 
 
