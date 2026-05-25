@@ -2718,6 +2718,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
+               "TTS_PROVIDER", "TTS_VOICE",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
     if body.key_name not in allowed:
         raise HTTPException(status_code=400, detail="key not allowed")
@@ -2803,6 +2804,8 @@ async def api_get_preferences():
         "user_name": vault_dict.get("USER_NAME", ""),
         "honorific": vault_dict.get("HONORIFIC", "sir"),
         "calendar_accounts": vault_dict.get("CALENDAR_ACCOUNTS", "auto"),
+        "tts_provider": vault_dict.get("TTS_PROVIDER", "auto"),
+        "tts_voice": vault_dict.get("TTS_VOICE", ""),
     }
 
 @app.post("/api/settings/preferences")
