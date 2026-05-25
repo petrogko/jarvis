@@ -13,5 +13,3 @@ pyyaml==6.0.2
 # pysqlcipher3 bundles libsqlcipher 4.x — see SECURITY.md.
 pysqlcipher3==1.2.0
 argon2-cffi==23.1.0
-# Test dependencies
-pytest-asyncio==0.24.0
