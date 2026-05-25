@@ -18,12 +18,12 @@ import time
 log = logging.getLogger("jarvis.memory")
 
 
-def _get_conn() -> sqlite3.Connection:
+def _get_conn():
     """Return the SQLCipher connection from the unlocked vault session.
 
-    The connection is opened and keyed by vault.unlock(); this module never
-    opens its own SQLite file.  row_factory is applied here on every call so
-    all callers get sqlite3.Row results regardless of vault internals.
+    The connection is opened and keyed by vault.unlock(); row_factory is
+    set centrally on vault._apply_key (pysqlcipher3.dbapi2.Row, not
+    sqlite3.Row — the C types are incompatible).
 
     On first access after unlock the schema tables are created (idempotent).
 
@@ -34,7 +34,6 @@ def _get_conn() -> sqlite3.Connection:
     if sess is None:
         raise vault.VaultLockedError("memory.py called while vault is locked")
     conn = sess.memory_conn
-    conn.row_factory = sqlite3.Row
     # Lazy schema init — runs once per unlock (tracked on the session object).
     if not getattr(sess, "_memory_schema_ready", False):
         _init_schema(conn)

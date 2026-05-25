@@ -246,6 +246,39 @@ def test_memory_module_uses_vault_connection(tmp_path, monkeypatch):
     memory.create_schema()   # idempotent — safe to call twice
 
 
+def test_dispatch_registry_uses_vault_connection(tmp_path, monkeypatch):
+    """Regression guard: dispatch_registry must route through the vault, not
+    open data/jarvis.db directly (which is now SQLCipher and unreadable as
+    plain SQLite). Caught post-merge when the server crashed at import time."""
+    monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
+    monkeypatch.setattr(vault, "SECRETS_DB_PATH", tmp_path / "secrets.db")
+    monkeypatch.setattr(vault, "MEMORY_DB_PATH", tmp_path / "jarvis.db")
+
+    vault.bootstrap("pp")
+    vault.unlock("pp")
+
+    import dispatch_registry
+    # DispatchRegistry() must NOT touch the DB at construction time —
+    # server.py constructs it before the vault is unlocked.
+    reg = dispatch_registry.DispatchRegistry()
+    # After unlock, dispatches table is created lazily on first use.
+    did = reg.register("test-project", "/tmp/test-project", "build a thing")
+    assert isinstance(did, int) and did > 0
+    # Reads work.
+    recent = reg.get_most_recent()
+    assert recent is not None and recent["project_name"] == "test-project"
+    # _get_conn returns the live vault memory connection.
+    assert dispatch_registry._get_conn() is vault.session().memory_conn
+
+    vault.lock()
+    # When locked, format_for_prompt must not crash.
+    assert "No active or recent dispatches." in reg.format_for_prompt()
+    # But direct DB calls must raise.
+    with pytest.raises(vault.VaultLockedError):
+        dispatch_registry._get_conn()
+
+
 def test_migrate_auto_cleanup_on_second_unlock(tmp_path, monkeypatch):
     """Spec §8 step 7: after the second successful unlock, .bak files are deleted."""
     monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
