@@ -70,9 +70,6 @@ log = logging.getLogger("jarvis")
 # Config
 # ---------------------------------------------------------------------------
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-FISH_API_KEY = os.getenv("FISH_API_KEY", "")
-FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # JARVIS (MCU)
 FISH_API_URL = "https://api.fish.audio/v1/tts"
 USER_NAME = os.getenv("USER_NAME", "sir")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1208,7 +1205,9 @@ _last_greeting_time: float = 0
 
 async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio from text using Fish Audio TTS."""
-    if not FISH_API_KEY:
+    fish_api_key = _vault_get("FISH_API_KEY")
+    fish_voice_id = _vault_get("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")
+    if not fish_api_key:
         log.warning("FISH_API_KEY not set, skipping TTS")
         return None
 
@@ -1217,12 +1216,12 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
             response = await http.post(
                 FISH_API_URL,
                 headers={
-                    "Authorization": f"Bearer {FISH_API_KEY}",
+                    "Authorization": f"Bearer {fish_api_key}",
                     "Content-Type": "application/json",
                 },
                 json={
                     "text": text,
-                    "reference_id": FISH_VOICE_ID,
+                    "reference_id": fish_voice_id,
                     "format": "mp3",
                 },
             )
@@ -1497,8 +1496,9 @@ return windowList
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
-    if ANTHROPIC_API_KEY:
-        anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    api_key = _vault_get("ANTHROPIC_API_KEY")
+    if api_key:
+        anthropic_client = anthropic.AsyncAnthropic(api_key=api_key)
     else:
         log.warning("ANTHROPIC_API_KEY not set — LLM features disabled")
     cached_projects = []
@@ -1548,6 +1548,19 @@ app.add_middleware(
 # informative than "missing token"). Both layers share the public-
 # path allowlist so /api/auth/* and /api/health bypass both.
 import vault as _vault_mod
+
+
+def _vault_get(key: str, default: str = "") -> str:
+    """Read a config value from the unlocked vault.
+
+    Returns the default if the vault is locked (the caller should have
+    been blocked by the vault-locked middleware, but this is defensive).
+    """
+    sess = _vault_mod.session()
+    if sess is None:
+        return default
+    return sess.settings.get(key, default=default) or default
+
 
 _VAULT_PUBLIC_PATHS = frozenset({
     "/api/health",
@@ -2645,50 +2658,6 @@ async def voice_handler(ws: WebSocket):
 # Settings / Configuration endpoints
 # ---------------------------------------------------------------------------
 
-def _env_file_path() -> Path:
-    return Path(__file__).parent / ".env"
-
-def _env_example_path() -> Path:
-    return Path(__file__).parent / ".env.example"
-
-def _read_env() -> tuple[list[str], dict[str, str]]:
-    """Read .env file. Returns (raw_lines, parsed_dict). Creates from .env.example if missing."""
-    path = _env_file_path()
-    if not path.exists():
-        example = _env_example_path()
-        if example.exists():
-            import shutil as _shutil
-            _shutil.copy2(str(example), str(path))
-        else:
-            path.write_text("")
-    lines = path.read_text().splitlines()
-    parsed: dict[str, str] = {}
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            k, _, v = stripped.partition("=")
-            parsed[k.strip()] = v.strip().strip('"').strip("'")
-    return lines, parsed
-
-def _write_env_key(key: str, value: str) -> None:
-    """Update a single key in .env, preserving comments and order."""
-    lines, _ = _read_env()
-    found = False
-    new_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            k, _, _ = stripped.partition("=")
-            if k.strip() == key:
-                new_lines.append(f"{key}={value}")
-                found = True
-                continue
-        new_lines.append(line)
-    if not found:
-        new_lines.append(f"{key}={value}")
-    _env_file_path().write_text("\n".join(new_lines) + "\n")
-    os.environ[key] = value
-
 class KeyUpdate(BaseModel):
     key_name: str
     key_value: str
@@ -2703,15 +2672,19 @@ class PreferencesUpdate(BaseModel):
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
-    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
+    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
+               "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
     if body.key_name not in allowed:
-        return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
-    _write_env_key(body.key_name, body.key_value)
-    return {"success": True}
+        raise HTTPException(status_code=400, detail="key not allowed")
+    sess = _vault_mod.session()
+    if sess is None:
+        raise HTTPException(status_code=423, detail="vault locked")
+    sess.settings.set(body.key_name, body.key_value)
+    return {"ok": True}
 
 @app.post("/api/settings/test-anthropic")
 async def api_test_anthropic(body: KeyTest):
-    key = body.key_value or os.getenv("ANTHROPIC_API_KEY", "")
+    key = body.key_value or _vault_get("ANTHROPIC_API_KEY")
     if not key:
         return {"valid": False, "error": "No key provided"}
     try:
@@ -2723,7 +2696,7 @@ async def api_test_anthropic(body: KeyTest):
 
 @app.post("/api/settings/test-fish")
 async def api_test_fish(body: KeyTest):
-    key = body.key_value or os.getenv("FISH_API_KEY", "")
+    key = body.key_value or _vault_get("FISH_API_KEY")
     if not key:
         return {"valid": False, "error": "No key provided"}
     try:
@@ -2731,7 +2704,7 @@ async def api_test_fish(body: KeyTest):
             resp = await client.post(
                 "https://api.fish.audio/v1/tts",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"text": "test", "reference_id": FISH_VOICE_ID},
+                json={"text": "test", "reference_id": _vault_get("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")},
             )
             if resp.status_code in (200, 201):
                 return {"valid": True}
@@ -2745,7 +2718,8 @@ async def api_test_fish(body: KeyTest):
 @app.get("/api/settings/status")
 async def api_settings_status():
     import shutil as _shutil
-    _, env_dict = _read_env()
+    sess = _vault_mod.session()
+    vault_dict: dict[str, str] = sess.settings.list_all() if sess else {}
     claude_installed = _shutil.which("claude") is not None
     calendar_ok = mail_ok = notes_ok = False
     try: await get_todays_events(); calendar_ok = True
@@ -2769,27 +2743,31 @@ async def api_settings_status():
         "server_port": 8340,
         "uptime_seconds": int(time.time() - _session_start),
         "env_keys_set": {
-            "anthropic": bool(env_dict.get("ANTHROPIC_API_KEY", "").strip() and env_dict.get("ANTHROPIC_API_KEY", "") != "your-anthropic-api-key-here"),
-            "fish_audio": bool(env_dict.get("FISH_API_KEY", "").strip() and env_dict.get("FISH_API_KEY", "") != "your-fish-audio-api-key-here"),
-            "fish_voice_id": bool(env_dict.get("FISH_VOICE_ID", "").strip()),
-            "user_name": env_dict.get("USER_NAME", ""),
+            "anthropic": bool(vault_dict.get("ANTHROPIC_API_KEY", "").strip() and vault_dict.get("ANTHROPIC_API_KEY", "") != "your-anthropic-api-key-here"),
+            "fish_audio": bool(vault_dict.get("FISH_API_KEY", "").strip() and vault_dict.get("FISH_API_KEY", "") != "your-fish-audio-api-key-here"),
+            "fish_voice_id": bool(vault_dict.get("FISH_VOICE_ID", "").strip()),
+            "user_name": vault_dict.get("USER_NAME", ""),
         },
     }
 
 @app.get("/api/settings/preferences")
 async def api_get_preferences():
-    _, env_dict = _read_env()
+    sess = _vault_mod.session()
+    vault_dict: dict[str, str] = sess.settings.list_all() if sess else {}
     return {
-        "user_name": env_dict.get("USER_NAME", ""),
-        "honorific": env_dict.get("HONORIFIC", "sir"),
-        "calendar_accounts": env_dict.get("CALENDAR_ACCOUNTS", "auto"),
+        "user_name": vault_dict.get("USER_NAME", ""),
+        "honorific": vault_dict.get("HONORIFIC", "sir"),
+        "calendar_accounts": vault_dict.get("CALENDAR_ACCOUNTS", "auto"),
     }
 
 @app.post("/api/settings/preferences")
 async def api_save_preferences(body: PreferencesUpdate):
-    _write_env_key("USER_NAME", body.user_name)
-    _write_env_key("HONORIFIC", body.honorific)
-    _write_env_key("CALENDAR_ACCOUNTS", body.calendar_accounts)
+    sess = _vault_mod.session()
+    if sess is None:
+        raise HTTPException(status_code=423, detail="vault locked")
+    sess.settings.set("USER_NAME", body.user_name)
+    sess.settings.set("HONORIFIC", body.honorific)
+    sess.settings.set("CALENDAR_ACCOUNTS", body.calendar_accounts)
     return {"success": True}
 
 # ---------------------------------------------------------------------------

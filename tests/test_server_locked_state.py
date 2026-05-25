@@ -92,6 +92,21 @@ def test_protected_endpoint_returns_423_while_locked(isolated_vault):
     assert r.status_code == 423
 
 
+def test_no_stale_env_calls_remain():
+    """Spec §8: after migration ships, no module outside vault.py may read
+    ANTHROPIC_API_KEY / FISH_* from os.environ directly."""
+    import re
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    pattern = re.compile(r'os\.getenv\(\s*[\'"](?:ANTHROPIC|FISH)_')
+    offenders = []
+    for py in repo_root.glob("*.py"):
+        if py.name in ("vault.py", "conftest.py"):
+            continue
+        if pattern.search(py.read_text()):
+            offenders.append(py.name)
+    assert not offenders, f"these files still call os.getenv directly: {offenders}"
+
+
 def test_protected_endpoint_reachable_after_unlock(isolated_vault, monkeypatch):
     import server
     monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
