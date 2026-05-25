@@ -202,6 +202,30 @@ def test_migrate_imports_memory_and_env(tmp_path, monkeypatch):
     assert (tmp_path / ".env.bootstrap.pre-encrypt.bak").exists()
 
 
+def test_memory_module_uses_vault_connection(tmp_path, monkeypatch):
+    monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(vault, "SALT_PATH", tmp_path / "kdf.salt")
+    monkeypatch.setattr(vault, "SECRETS_DB_PATH", tmp_path / "secrets.db")
+    monkeypatch.setattr(vault, "MEMORY_DB_PATH", tmp_path / "jarvis.db")
+
+    vault.bootstrap("pp")
+    vault.unlock("pp")
+
+    import memory
+    # _get_conn() returns the live vault session's memory_conn.
+    conn = memory._get_conn()
+    assert conn is vault.session().memory_conn
+
+    vault.lock()
+    with pytest.raises(vault.VaultLockedError):
+        memory._get_conn()
+
+    # Re-unlock and verify create_schema is idempotent and runs cleanly.
+    vault.unlock("pp")
+    memory.create_schema()   # idempotent if exists
+    memory.create_schema()   # idempotent — safe to call twice
+
+
 def test_migrate_auto_cleanup_on_second_unlock(tmp_path, monkeypatch):
     """Spec §8 step 7: after the second successful unlock, .bak files are deleted."""
     monkeypatch.setattr(vault, "DATA_DIR", tmp_path)
