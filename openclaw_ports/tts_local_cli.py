@@ -89,10 +89,12 @@ async def synthesize(
             "--",
             text,
         ]
+        # Discard stdout/stderr — we don't read them, and PIPE without a drain
+        # can deadlock if `say` ever fills the OS pipe buffer (~64 KiB on Linux).
         proc = await asyncio.create_subprocess_exec(
             *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
         try:
             await asyncio.wait_for(proc.wait(), timeout=timeout_s)
