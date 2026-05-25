@@ -2287,9 +2287,9 @@ async def voice_handler(ws: WebSocket):
                 await ws.send_json({"type": "status", "state": "speaking"})
                 audio = await synthesize_speech(tts)
                 if audio:
-                    await ws.send_json({"type": "audio", "data": audio, "text": response_text})
+                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
                 else:
-                    await ws.send_json({"type": "text", "text": response_text})
+                    await ws.send_json({"type": "audio", "data": "", "text": response_text})
                 continue
 
             if msg.get("type") != "transcript" or not msg.get("isFinal"):
@@ -2673,7 +2673,10 @@ async def voice_handler(ws: WebSocket):
                 if audio:
                     await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
                 else:
-                    await ws.send_json({"type": "text", "text": response_text})
+                    # No backend TTS bytes (no local say, no Fish key). Still emit
+                    # an `audio` message with empty data so the frontend can show
+                    # the JARVIS line AND optionally fall back to browser TTS.
+                    await ws.send_json({"type": "audio", "data": "", "text": response_text})
                     await ws.send_json({"type": "status", "state": "idle"})
                 log.info(f"JARVIS: {response_text}")
                 last_jarvis_response = response_text

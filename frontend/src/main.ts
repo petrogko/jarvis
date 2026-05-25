@@ -6,7 +6,7 @@
  */
 
 import { createOrb, type OrbState } from "./orb";
-import { createVoiceInput, createAudioPlayer } from "./voice";
+import { createVoiceInput, createAudioPlayer, speakViaBrowser } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { awaitUnlock } from "./lock-screen";
@@ -121,20 +121,42 @@ import "./style.css";
     const type = msg.type as string;
 
     if (type === "audio") {
-      const audioData = msg.data as string;
+      const audioData = msg.data as string | undefined;
+      const text = msg.text as string | undefined;
       console.log("[audio] received", audioData ? `${audioData.length} chars` : "EMPTY", "state:", currentState);
-      if (audioData) {
+      if (audioData && audioData.length > 0) {
+        // Normal path: backend produced audio bytes — decode and play.
         if (currentState !== "speaking") {
           transition("speaking");
         }
         audioPlayer.enqueue(audioData);
+      } else if (text) {
+        // Fallback: backend has no audio (no Fish key, Docker container, etc.).
+        // Speak via the browser so the user still hears JARVIS.
+        console.warn("[tts-fallback] no audio bytes — falling back to speechSynthesis");
+        transition("speaking");
+        speakViaBrowser(text);
+        // speechSynthesis has no AudioContext integration; transition to idle
+        // after the utterance ends (or immediately if synthesis unavailable).
+        const synth = window.speechSynthesis;
+        if (synth) {
+          // Poll until the utterance finishes then return to idle.
+          const poll = setInterval(() => {
+            if (!synth.speaking) {
+              clearInterval(poll);
+              transition("idle");
+            }
+          }, 250);
+        } else {
+          transition("idle");
+        }
       } else {
-        // TTS failed — no audio but still need to return to idle
-        console.warn("[audio] no data received, returning to idle");
+        // Neither audio bytes nor text — nothing to do.
+        console.warn("[audio] no data or text received, returning to idle");
         transition("idle");
       }
       // Log text for debugging
-      if (msg.text) console.log("[JARVIS]", msg.text);
+      if (text) console.log("[JARVIS]", text);
     } else if (type === "status") {
       const state = msg.state as string;
       if (state === "thinking" && currentState !== "thinking") {

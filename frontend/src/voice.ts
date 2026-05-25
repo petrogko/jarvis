@@ -100,6 +100,38 @@ export function createVoiceInput(
 }
 
 // ---------------------------------------------------------------------------
+// Browser TTS Fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Speak text via window.speechSynthesis (browser-native TTS).
+ *
+ * Used as a safety net when the backend cannot produce audio bytes
+ * (e.g. FISH_API_KEY missing, Docker container without macOS `say`).
+ * Synthesis happens entirely in the browser — no network, no server.
+ */
+export function speakViaBrowser(text: string): void {
+  if (!("speechSynthesis" in window)) {
+    console.warn("[tts-fallback] speechSynthesis not available");
+    return;
+  }
+  // Cancel any in-flight utterance so we don't queue up backlogs.
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  // Try to pick a natural-sounding voice if voices are already loaded.
+  // (getVoices() may return [] on first call before voiceschanged fires;
+  //  in that case the browser's default voice is used — acceptable degradation.)
+  const voices = window.speechSynthesis.getVoices();
+  const preferred = voices.find((v) =>
+    /alex|samantha|daniel|fiona|karen|moira|tessa|tom/i.test(v.name)
+  );
+  if (preferred) utterance.voice = preferred;
+  utterance.rate = 1.0;
+  utterance.pitch = 1.0;
+  window.speechSynthesis.speak(utterance);
+}
+
+// ---------------------------------------------------------------------------
 // Audio Player
 // ---------------------------------------------------------------------------
 
