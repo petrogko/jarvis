@@ -1633,7 +1633,13 @@ async def api_auth_unlock(body: _PassphraseBody):
         if key:
             anthropic_client = anthropic.AsyncAnthropic(api_key=key)
             log.info("Anthropic client initialized after vault unlock")
-    return {"ok": True}
+    # Generate (or fetch existing) auth token and return it to the client.
+    # The client must attach it as X-JARVIS-Token / ?token= on subsequent
+    # /api/* and /ws/* calls — Docker-bridge client IPs don't trip the
+    # loopback bypass, so the token is required even on localhost.
+    from auth import load_or_create_token
+    token = load_or_create_token()
+    return {"ok": True, "token": token}
 
 
 @app.post("/api/auth/lock")
@@ -2169,7 +2175,10 @@ async def voice_handler(ws: WebSocket):
         {"type": "task_spawned", "task_id": "...", "prompt": "..."}
         {"type": "task_complete", "task_id": "...", "summary": "..."}
     """
-    if not websocket_authorized(ws, LOCAL_TOKEN, trust_loopback=TRUST_LOOPBACK):
+    # Resolve the live token from the vault per-connect — LOCAL_TOKEN was a
+    # startup snapshot captured while the vault was locked (so empty).
+    from auth import load_or_create_token as _live_token
+    if not websocket_authorized(ws, _live_token(), trust_loopback=TRUST_LOOPBACK):
         log.warning("ws: rejected upgrade from %s (no/bad token)", ws.client.host if ws.client else "?")
         await ws.close(code=4401)
         return

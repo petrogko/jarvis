@@ -93,10 +93,25 @@ class LocalTokenAuthMiddleware(BaseHTTPMiddleware):
     - Public paths (health, static assets, index) are always allowed.
     """
 
-    def __init__(self, app, *, token: str, trust_loopback: bool = True):
+    def __init__(self, app, *, token: str = "", trust_loopback: bool = True):
         super().__init__(app)
-        self._token = token
+        # `token` is kept as a fallback for the rare case where the vault is
+        # not yet initialized but a caller has handed us a static token.
+        # The expected production path is: every request looks up the live
+        # token from the unlocked vault via `load_or_create_token()`.
+        self._fallback_token = token
         self._trust_loopback = trust_loopback
+
+    def _current_token(self) -> str:
+        """Resolve the live auth token from the vault on every request.
+
+        Pre-vault the token was captured once at startup. Post-vault the
+        vault is locked at boot, so a startup snapshot would be permanently
+        empty. Looking up per-request keeps the middleware aligned with the
+        actual vault state across lock/unlock cycles.
+        """
+        live = load_or_create_token()
+        return live or self._fallback_token
 
     async def dispatch(self, request: Request, call_next):
         if request.method == "OPTIONS":
@@ -107,7 +122,7 @@ class LocalTokenAuthMiddleware(BaseHTTPMiddleware):
         if self._trust_loopback and is_loopback(client_host):
             return await call_next(request)
         presented = request.headers.get("x-jarvis-token") or request.query_params.get("token")
-        if not check_token(presented, self._token):
+        if not check_token(presented, self._current_token()):
             log.warning(
                 "auth: rejected %s %s from %s",
                 request.method, request.url.path, client_host,
