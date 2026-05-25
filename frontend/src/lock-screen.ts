@@ -11,7 +11,7 @@
  * the DOM on successful unlock.
  */
 
-import { setToken } from "./auth-token";
+import { setToken, getToken } from "./auth-token";
 
 type AuthState = { initialized: boolean; locked: boolean };
 type UnlockResponse = { ok: boolean; token?: string };
@@ -98,6 +98,12 @@ export async function awaitUnlock(): Promise<void> {
   if (!state.initialized) {
     await renderFirstRun(container);
   } else if (state.locked) {
+    await renderLocked(container);
+  } else if (!getToken()) {
+    // Vault is unlocked server-side, but THIS browser tab has no token —
+    // typically because the page was reloaded after the original unlock.
+    // Show the unlock prompt so the user can re-issue (Argon2id will re-run,
+    // but the alternative is a silently-broken UI).
     await renderLocked(container);
   }
   container.style.display = "none";
