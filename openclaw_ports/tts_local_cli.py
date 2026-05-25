@@ -44,7 +44,9 @@ def is_available() -> bool:
 
     Implemented in T3.
     """
-    raise NotImplementedError
+    if platform.system() != "Darwin":
+        return False
+    return shutil.which(SAY_BINARY) is not None
 
 
 async def synthesize(

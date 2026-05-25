@@ -35,3 +35,26 @@ def test_attribution_header_present():
     assert "125d82cab2952f87f532106a368d54e526141026" in src
     assert "MIT-licensed" in src
     assert "openclaw_ports/NOTICE.md" in src
+
+
+def test_is_available_true_on_macos_with_say(monkeypatch):
+    monkeypatch.setattr(tts_local_cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        tts_local_cli.shutil,
+        "which",
+        lambda name: tts_local_cli.SAY_BINARY if name == tts_local_cli.SAY_BINARY else None,
+    )
+    assert tts_local_cli.is_available() is True
+
+
+def test_is_available_false_on_linux(monkeypatch):
+    monkeypatch.setattr(tts_local_cli.platform, "system", lambda: "Linux")
+    # Even if a `say` binary exists on PATH, we refuse non-Darwin.
+    monkeypatch.setattr(tts_local_cli.shutil, "which", lambda name: "/usr/bin/say")
+    assert tts_local_cli.is_available() is False
+
+
+def test_is_available_false_if_say_missing(monkeypatch):
+    monkeypatch.setattr(tts_local_cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(tts_local_cli.shutil, "which", lambda name: None)
+    assert tts_local_cli.is_available() is False
