@@ -8,34 +8,6 @@ Living tracker for in-flight and pending work. Each entry: short rationale + sta
 
 ## Priority queue (next session)
 
-### P1 — UI-only configuration (no `.env` on host)
-**Status:** proposed
-**Persona routing:** `software-architect` (refactor across `server.py` + new storage module + Docker compose; changes trust boundary for secret storage) → `security-advisor` (touches secrets-at-rest) → implementation → `code-reviewer` → `test-runner`.
-
-**Why:** today secrets live in `.env` on the host. UI saves work in-process but Docker reload doesn't pick them up cleanly (compose `env_file` is boot-only; in-container `.env` writes go to a non-bind-mounted layer). User wants UI-only flow.
-
-**Sketch (architect to validate):**
-- Move config storage to `data/settings.json` (already bind-mounted via `./data:/app/data:rw`).
-- `_read_env` / `_write_env_key` swap to read/write that file instead of `.env`.
-- `.env` becomes optional bootstrap-only (first-run convenience), gitignored, never required.
-- Server reads on every request → no restart needed after UI save.
-- File perms hardened (chmod 600) by existing `file_perms.harden_secrets_at_startup`.
-
----
-
-### P2 — Memory hardening (SQLCipher + PII redactor)
-**Status:** proposed (user-selected priority before UI-config emerged)
-**Persona routing:** `software-architect` → `security-advisor` (membrane: data-at-rest classification) → implementation → review/test.
-
-**Sketch:**
-- Migrate `memory.py` SQLite to SQLCipher; encryption key stored in `data/settings.json` (depends on P1) or macOS Keychain on host.
-- Add `pii_redactor.py`: regex + heuristic strip of emails, phones, credit cards, SSN-shaped tokens from `[ACTION:REMEMBER]` payloads before insert.
-- Migration tooling for existing `data/memory.db` (single-user, low risk, but still: backup + dry-run).
-
-**Depends on P1** for key storage.
-
----
-
 ### P3 — Privacy: local Whisper STT + macOS `say` TTS
 **Status:** proposed
 **Persona routing:** `software-architect` (touches voice-loop trust boundary; STT moves from browser→backend) → implementation → review/test.
@@ -137,12 +109,13 @@ Living tracker for in-flight and pending work. Each entry: short rationale + sta
 
 ## In flight
 
-_(none — last branch `feat/personas-design-2026-05` is in review at #9)_
+_(none — vault branch `feat/ui-config-encrypted-2026-05` is in review)_
 
 ---
 
 ## Done (recent)
 
+- **P1 + P2** merged into a single rollout in `feat/ui-config-encrypted-2026-05`: SQLCipher-encrypted dual-DB vault (Argon2id KDF), UI lock-screen, safe legacy migration, auth tokens moved to vault, settings + memory endpoints routed through vault. (P1+P2 merged into a single rollout in feat/ui-config-encrypted-2026-05.)
 - 5-persona dev-session infrastructure + tripwire hook + CLAUDE.md routing (PR #9, branch `feat/personas-design-2026-05`)
 - Goal-drift integration test (same PR)
 - Docker setup for backend with audited egress allowlist (same PR)
