@@ -45,17 +45,19 @@ let setupStep = 0; // 0=anthropic, 1=fish, 2=name, 3=done
 // API helpers
 // ---------------------------------------------------------------------------
 
+import { withAuthHeaders } from "./auth-token";
+
 async function apiGet<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, withAuthHeaders());
   return res.json();
 }
 
 async function apiPost<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetch(url, withAuthHeaders({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }));
   return res.json();
 }
 

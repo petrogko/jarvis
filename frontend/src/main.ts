@@ -10,6 +10,7 @@ import { createVoiceInput, createAudioPlayer } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { awaitUnlock } from "./lock-screen";
+import { withAuthHeaders } from "./auth-token";
 import "./style.css";
 
 (async () => {
@@ -209,7 +210,7 @@ import "./style.css";
     menuDropdown.style.display = "none";
     statusEl.textContent = "restarting...";
     try {
-      await fetch("/api/restart", { method: "POST" });
+      await fetch("/api/restart", withAuthHeaders({ method: "POST" }));
       // Wait a few seconds then reload
       setTimeout(() => window.location.reload(), 4000);
     } catch {

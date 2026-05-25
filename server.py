@@ -1633,7 +1633,13 @@ async def api_auth_unlock(body: _PassphraseBody):
         if key:
             anthropic_client = anthropic.AsyncAnthropic(api_key=key)
             log.info("Anthropic client initialized after vault unlock")
-    return {"ok": True}
+    # Generate (or fetch existing) auth token and return it to the client.
+    # The client must attach it as X-JARVIS-Token / ?token= on subsequent
+    # /api/* and /ws/* calls — Docker-bridge client IPs don't trip the
+    # loopback bypass, so the token is required even on localhost.
+    from auth import load_or_create_token
+    token = load_or_create_token()
+    return {"ok": True, "token": token}
 
 
 @app.post("/api/auth/lock")

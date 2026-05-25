@@ -2,6 +2,8 @@
  * WebSocket client for JARVIS server communication.
  */
 
+import { withAuthQuery } from "./auth-token";
+
 export type MessageHandler = (msg: Record<string, unknown>) => void;
 
 export interface JarvisSocket {
@@ -21,7 +23,7 @@ export function createSocket(url: string): JarvisSocket {
   function connect() {
     if (closed) return;
 
-    ws = new WebSocket(url);
+    ws = new WebSocket(withAuthQuery(url));
 
     ws.onopen = () => {
       connected = true;
