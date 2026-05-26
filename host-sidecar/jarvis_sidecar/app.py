@@ -8,12 +8,13 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from . import config
 from .auth import HEADER_NAME, header_matches
 from .tts import synthesize, TTSError
+from .stt import transcribe, STTError
 
 
 def _load_token() -> str:
@@ -64,6 +65,21 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail=msg)
             raise HTTPException(status_code=500, detail=msg)
         return Response(content=audio, media_type="audio/m4a")
+
+    @app.post("/stt")
+    async def stt(
+        audio: UploadFile = File(...),
+        _=Depends(require_token),
+    ) -> dict:
+        # Cap at config.STT_MAX_BYTES (defense against resource exhaustion).
+        contents = await audio.read(config.STT_MAX_BYTES + 1)
+        if len(contents) > config.STT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="audio upload too large")
+        try:
+            text, duration_ms = await transcribe(contents, audio.content_type or "audio/webm")
+        except STTError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        return {"text": text, "duration_ms": duration_ms}
 
     return app
 

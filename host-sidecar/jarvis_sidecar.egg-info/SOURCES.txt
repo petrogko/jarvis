@@ -2,6 +2,8 @@ README.md
 pyproject.toml
 jarvis_sidecar/__init__.py
 jarvis_sidecar/__main__.py
+jarvis_sidecar/app.py
+jarvis_sidecar/auth.py
 jarvis_sidecar/config.py
 jarvis_sidecar.egg-info/PKG-INFO
 jarvis_sidecar.egg-info/SOURCES.txt
@@ -9,3 +11,4 @@ jarvis_sidecar.egg-info/dependency_links.txt
 jarvis_sidecar.egg-info/requires.txt
 jarvis_sidecar.egg-info/top_level.txt
 tests/test_auth.py
+tests/test_health.py
