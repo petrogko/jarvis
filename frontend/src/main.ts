@@ -24,7 +24,9 @@ import "./style.css";
 
   type State = "idle" | "listening" | "thinking" | "speaking";
   let currentState: State = "idle";
-  let isMuted = false;
+  // Mic defaults to OFF — user explicitly unmutes when they want voice input.
+  // Typing still works via the text input regardless of mute state.
+  let isMuted = true;
 
   const statusEl = document.getElementById("status-text")!;
   const errorEl = document.getElementById("error-text")!;
@@ -70,6 +72,12 @@ import "./style.css";
     currentState = newState;
     orb.setState(newState as OrbState);
     updateStatus(newState);
+
+    // Show the stop button only while JARVIS is producing audio.
+    const stopBtn = document.getElementById("btn-stop");
+    if (stopBtn) {
+      stopBtn.style.display = newState === "speaking" ? "inline-flex" : "none";
+    }
 
     switch (newState) {
       case "idle":
@@ -182,10 +190,15 @@ import "./style.css";
   // Kick off
   // ---------------------------------------------------------------------------
 
-  // Start listening after a brief delay for the orb to render
+  // Mic is muted by default — start the voice-input engine but pause it
+  // immediately so it's ready when the user unmutes. The orb shows the
+  // "idle" state; the user can either type into the text input or click
+  // the mic button to start listening.
   setTimeout(() => {
     voiceInput.start();
-    transition("listening");
+    voiceInput.pause();
+    btnMute.classList.add("muted");
+    transition("idle");
   }, 1000);
 
   // Resume AudioContext on ANY user interaction (browser autoplay policy)
@@ -207,11 +220,23 @@ import "./style.css";
   // ---------------------------------------------------------------------------
 
   const btnMute = document.getElementById("btn-mute")!;
+  const btnStop = document.getElementById("btn-stop")!;
   const btnMenu = document.getElementById("btn-menu")!;
   const menuDropdown = document.getElementById("menu-dropdown")!;
   const btnRestart = document.getElementById("btn-restart")!;
   const btnFixSelf = document.getElementById("btn-fix-self")!;
   const btnTranscriptToggle = document.getElementById("btn-transcript-toggle")!;
+
+  btnStop.addEventListener("click", (e) => {
+    e.stopPropagation();
+    // Stop both audio paths: streamed bytes via AudioContext, and browser
+    // speechSynthesis fallback. Whichever was playing, it ends here.
+    audioPlayer.stop();
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    transition("idle");
+  });
 
   btnMute.addEventListener("click", (e) => {
     e.stopPropagation();

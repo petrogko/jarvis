@@ -48,6 +48,7 @@ let setupStep = 0; // 0=anthropic, 1=fish, 2=name, 3=done
 // ---------------------------------------------------------------------------
 
 import { withAuthHeaders } from "./auth-token";
+import { setPreferredVoice } from "./voice-pref";
 
 async function apiGet<T>(url: string): Promise<T> {
   const res = await fetch(url, withAuthHeaders());
@@ -127,7 +128,9 @@ function buildPanelHTML(): string {
           <div class="settings-field">
             <label>TTS Voice</label>
             <div class="settings-input-row">
-              <input type="text" id="input-tts-voice" placeholder="Alex" />
+              <select id="input-tts-voice">
+                <option value="">(Auto-detect)</option>
+              </select>
               <button class="settings-btn" id="btn-save-tts-voice">Save</button>
             </div>
           </div>
@@ -267,14 +270,38 @@ async function loadPreferences() {
     const honEl = document.getElementById("input-honorific") as HTMLSelectElement;
     const calEl = document.getElementById("input-calendar-accounts") as HTMLTextAreaElement;
     const ttsProviderEl = document.getElementById("input-tts-provider") as HTMLSelectElement;
-    const ttsVoiceEl = document.getElementById("input-tts-voice") as HTMLInputElement;
+    const ttsVoiceEl = document.getElementById("input-tts-voice") as HTMLSelectElement;
     if (nameEl) nameEl.value = prefs.user_name || "";
     if (honEl) honEl.value = prefs.honorific || "sir";
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
     if (ttsProviderEl) ttsProviderEl.value = prefs.tts_provider || "auto";
-    if (ttsVoiceEl) ttsVoiceEl.value = prefs.tts_voice || "";
+    if (ttsVoiceEl) {
+      populateVoiceOptions(ttsVoiceEl, prefs.tts_voice || "");
+    }
+    // Hydrate localStorage so speakViaBrowser picks up the user's choice
+    // without re-fetching settings on every utterance.
+    setPreferredVoice(prefs.tts_voice || "");
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
+  }
+}
+
+function populateVoiceOptions(select: HTMLSelectElement, preferred: string): void {
+  const render = () => {
+    const voices = window.speechSynthesis?.getVoices?.() ?? [];
+    // Preserve the leading "(Auto-detect)" option already in the DOM.
+    const head = select.querySelector('option[value=""]')?.outerHTML
+      ?? '<option value="">(Auto-detect)</option>';
+    const sorted = [...voices].sort((a, b) => a.name.localeCompare(b.name));
+    const opts = sorted
+      .map((v) => `<option value="${v.name}">${v.name} (${v.lang})</option>`)
+      .join("");
+    select.innerHTML = head + opts;
+    select.value = preferred;
+  };
+  render();
+  if (window.speechSynthesis && "onvoiceschanged" in window.speechSynthesis) {
+    window.speechSynthesis.onvoiceschanged = render;
   }
 }
 
@@ -313,10 +340,11 @@ function wireEvents() {
 
   // Save TTS voice
   document.getElementById("btn-save-tts-voice")?.addEventListener("click", async () => {
-    const voice = (document.getElementById("input-tts-voice") as HTMLInputElement).value.trim();
-    if (voice) {
-      await apiPost("/api/settings/keys", { key_name: "TTS_VOICE", key_value: voice });
-    }
+    const voice = (document.getElementById("input-tts-voice") as HTMLSelectElement).value;
+    await apiPost("/api/settings/keys", { key_name: "TTS_VOICE", key_value: voice });
+    // Mirror to localStorage so the browser-TTS fallback picks it up on
+    // the next utterance without a settings round-trip.
+    setPreferredVoice(voice);
   });
 
   // Test Anthropic

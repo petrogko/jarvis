@@ -110,6 +110,8 @@ export function createVoiceInput(
  * (e.g. FISH_API_KEY missing, Docker container without macOS `say`).
  * Synthesis happens entirely in the browser — no network, no server.
  */
+import { getPreferredVoice } from "./voice-pref";
+
 export function speakViaBrowser(text: string): void {
   if (!("speechSynthesis" in window)) {
     console.warn("[tts-fallback] speechSynthesis not available");
@@ -118,14 +120,16 @@ export function speakViaBrowser(text: string): void {
   // Cancel any in-flight utterance so we don't queue up backlogs.
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  // Try to pick a natural-sounding voice if voices are already loaded.
-  // (getVoices() may return [] on first call before voiceschanged fires;
-  //  in that case the browser's default voice is used — acceptable degradation.)
+  // Voice selection: explicit user preference > regex over common natural
+  // voices > browser default. getVoices() may return [] before
+  // `voiceschanged` fires; falling through to browser default is acceptable.
   const voices = window.speechSynthesis.getVoices();
-  const preferred = voices.find((v) =>
-    /alex|samantha|daniel|fiona|karen|moira|tessa|tom/i.test(v.name)
-  );
-  if (preferred) utterance.voice = preferred;
+  const preferredName = getPreferredVoice();
+  const selected =
+    (preferredName ? voices.find((v) => v.name === preferredName) : undefined) ||
+    voices.find((v) => /alex|samantha|daniel|fiona|karen|moira|tessa|tom/i.test(v.name)) ||
+    null;
+  if (selected) utterance.voice = selected;
   utterance.rate = 1.0;
   utterance.pitch = 1.0;
   window.speechSynthesis.speak(utterance);
