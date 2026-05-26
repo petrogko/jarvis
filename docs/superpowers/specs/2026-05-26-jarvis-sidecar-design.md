@@ -65,25 +65,26 @@
   1. `brew install whisper-cpp ffmpeg`
   2. Download `base.en` GGML model to `~/Library/Application Support/jarvis-sidecar/models/`
   3. Generate auth token (32 random bytes, base64); write to `~/Library/Application Support/jarvis-sidecar/token` (chmod 600)
-  4. Install `~/Library/LaunchAgents/com.jarvis.sidecar.plist`; `launchctl load` it
-- **Logs:** stderr → `~/Library/Logs/jarvis-sidecar.log`. Rotation: 5 files × 5 MB via Python `RotatingFileHandler`.
+  4. Install `~/Library/LaunchAgents/com.jarvis.sidecar.plist` (with `KeepAlive: true` so the sidecar survives crashes); `launchctl load` it
+- **Uninstall:** `host-sidecar/teardown.sh` script REQUIRED at ship: `launchctl unload …`, remove the plist, remove the token file. `docs/DOCKER.md` must instruct operators to run teardown before `docker compose -p jarvis down -v` to avoid an orphan sidecar holding the model in memory.
+- **Logs:** structured JSON to `~/Library/Logs/jarvis-sidecar.log` — request metadata ONLY (timestamp, endpoint, duration_ms, request_bytes, response_bytes, status). Never the audio bytes or the transcript text. Rotation: 5 files × 5 MB via Python `RotatingFileHandler`.
 
 ### 3.2 Endpoints
 
 | Endpoint | Method | Body | Response | Auth |
 |---|---|---|---|---|
-| `/health` | GET | — | `{"status":"ok","whisper_model":"base.en","say_available":true}` | None (loopback only; allows ops checks without token) |
-| `/tts` | POST | `{"text": str, "voice": str}` (JSON) | `audio/m4a` bytes | `X-JARVIS-Token` header required |
-| `/stt` | POST | `multipart/form-data` — `audio` field with WebM/Opus or WAV | `{"text": str, "duration_ms": int}` | `X-JARVIS-Token` header required |
+| `/tts` | POST | `{"text": str, "voice": str}` (JSON) | `audio/m4a` bytes | `X-SIDECAR-Token` header required |
+| `/stt` | POST | `multipart/form-data` — `audio` field with WebM/Opus or WAV | `{"text": str, "duration_ms": int}` | `X-SIDECAR-Token` header required |
+| `/health` | GET | — | `{"status":"ok","whisper_model":"base.en","say_available":true}` | `X-SIDECAR-Token` (defense-in-depth; loopback bind is primary defense) |
 
 `/tts` implementation: same shape as `openclaw_ports/tts_local_cli` — argv-only `say` invocation with M4A/AAC output. ~30 LOC.
 
 `/stt` implementation:
-1. Save uploaded audio to temp file
+1. Save uploaded audio to temp file (created via `tempfile.mkdtemp(prefix="jarvis-sidecar-")`)
 2. `ffmpeg -i <upload> -ar 16000 -ac 1 -f wav <pcm.wav>` (whisper.cpp wants 16kHz mono WAV)
-3. `whisper-cli -m models/base.en.bin -f pcm.wav -nt -np -otxt -of <out>` (no-timestamps, no-progress, output text)
+3. `whisper-cli -m models/base.en.bin -f pcm.wav -nt -np -otxt -of <out>`. **Critical I/O discipline (security-advisor required fix #3):** invoke with `stdout=asyncio.subprocess.DEVNULL` so the transcript never appears on stdout. Capture stderr into a pipe only enough to detect non-zero exit + propagate as a 5xx — DO NOT log raw stderr to the rotating log file (whisper.cpp may emit transcript fragments there depending on verbosity). Same pattern as `openclaw_ports/tts_local_cli.py:111-115` (DEVNULL for both streams on `say`).
 4. Read `<out>.txt`, return trimmed string
-5. Always clean up temp files in `finally`
+5. `finally`: enumerate and delete ALL three temp files (uploaded audio, ffmpeg WAV, whisper output `.txt`). Swallow `FileNotFoundError`.
 
 Timeout per request: 60s (`asyncio.wait_for` around the subprocess). Audio uploads capped at 5 MB (FastAPI dependency).
 
@@ -91,7 +92,7 @@ Timeout per request: 60s (`asyncio.wait_for` around the subprocess). Audio uploa
 
 - **Single shared token** between JARVIS and sidecar, stored at `~/Library/Application Support/jarvis-sidecar/token` (chmod 600).
 - Sidecar reads it on boot; JARVIS reads it from the SAME file path via a host bind-mount in `docker-compose.yml` (mount the directory read-only into `/host-sidecar-config/`).
-- JARVIS sends every request with `X-JARVIS-Token: <token>` header. Sidecar rejects with 401 otherwise.
+- JARVIS sends every request with `X-SIDECAR-Token: <token>` header (distinct from the browser↔JARVIS `X-JARVIS-Token` to disambiguate trust contexts). Sidecar rejects with 401 otherwise.
 - The token is **independent** of the vault's `AUTH_TOKEN`. Two separate trust contexts (browser↔JARVIS vs JARVIS↔sidecar) get two separate tokens. Simpler to reason about.
 
 ## 4. JARVIS backend changes
@@ -121,6 +122,14 @@ New `TTS_PROVIDER` value: `sidecar`. Provider table:
 
 Body: `multipart/form-data` with `audio` field. Returns `{"text": str}`. Implementation: pass through to `sidecar_client.stt_via_sidecar`. Reuses the existing auth middleware.
 
+**Audit log requirement (security-advisor required fix #2):** every `/api/stt` invocation MUST append an entry to `data/audit.jsonl`:
+```json
+{"ts": "...", "kind": "stt_request", "ip": "...", "bytes": <int>, "transcript_returned": <bool>}
+```
+The transcript TEXT itself is NEVER logged (voice PII). The boolean is sufficient for forensic reconstruction of which requests produced output. This preserves the existing invariant ([SECURITY.md §8 PRs]) that all user-input-driven actions are auditable.
+
+**Transcript flow path (security-advisor required fix #5):** `sidecar_client.stt_via_sidecar`'s return value MUST be handed back to the same voice-handler pipeline that processes Web Speech transcripts — `socket.send({type:"transcript", text, isFinal:true})` shape, dispatched into `voice_handler` in `server.py`. NO bypass paths, NO direct LLM call, NO skipping `extract_action`. A comment in `sidecar_client.py` will cite the call site to make this explicit for future maintainers.
+
 ## 5. Frontend changes
 
 ### 5.1 New module: `frontend/src/stt.ts`
@@ -146,16 +155,17 @@ New section "STT Provider" with a dropdown: `Web Speech (browser/Google)` | `Whi
 
 ## 6. Docker compose changes
 
-Add a single bind mount:
+Add a single bind mount. **Security-advisor required fix #1:** mount the token FILE only, not the parent directory, so any future files placed alongside it (logs, models, debug dumps) are not silently exposed to the container.
 
 ```yaml
 services:
   backend:
     volumes:
       - ./data:/app/data:rw
-      # NEW: read-only access to the sidecar token. The sidecar owns
-      # this dir on the host; JARVIS reads the token.
-      - ~/Library/Application Support/jarvis-sidecar/:/host-sidecar-config/:ro
+      # NEW: read-only access to the sidecar token file ONLY (not the
+      # parent directory — granularity protects against accidental
+      # exposure of future files placed in the sidecar config dir).
+      - ~/Library/Application Support/jarvis-sidecar/token:/host-sidecar-config/token:ro
     # NEW: ensure host.docker.internal resolves (Docker Desktop does this
     # automatically on macOS but adding extra_hosts is explicit and safe).
     extra_hosts:
@@ -169,14 +179,14 @@ No new environment variables; the sidecar URL is in the vault as `SIDECAR_URL`.
 | Boundary | What crosses it | Defense |
 |---|---|---|
 | Browser ↔ JARVIS Docker | User audio (POST `/api/stt`), JARVIS response audio (WS `audio` message) | Existing JARVIS vault token (`X-JARVIS-Token`), TLS in production |
-| JARVIS Docker ↔ host sidecar | Audio bytes (in), text (out); response text (in), audio bytes (out) | Loopback bind on sidecar; second token in the `X-JARVIS-Token` header; bind mount is RO so JARVIS can't tamper with the token file |
+| JARVIS Docker ↔ host sidecar | Audio bytes (in), text (out); response text (in), audio bytes (out) | Loopback bind on sidecar; separate `X-SIDECAR-Token` (distinct from JARVIS vault token); bind mount is RO so JARVIS can't tamper with the token file |
 | Sidecar ↔ `say` / `whisper.cpp` | argv-passed text/audio file path | argv-only invocation, no shell, no f-string interpolation. Same hardening as `openclaw_ports/tts_local_cli` |
 | Sidecar ↔ disk | Temp files (audio uploads, whisper output) | Files created in `tempfile.mkdtemp(prefix="jarvis-sidecar-")`, deleted in `finally`. Never reused across requests. |
 
 ### 7.1 Threat model deltas
 
 - **New attack surface:** loopback HTTP server on port 9999.
-- **Mitigation:** binds 127.0.0.1 only; rejects without correct `X-JARVIS-Token`; sidecar logs only metadata (request count, duration, bytes — never text or audio content).
+- **Mitigation:** binds 127.0.0.1 only; rejects without correct `X-SIDECAR-Token`; sidecar logs only metadata (request count, duration, bytes — never text or audio content).
 - **Existing JARVIS hardening invariants preserved:** vault, auth middleware, untrusted-content sanitizer, audit log all unchanged.
 - **NOT defended against:** another process on the same Mac that can read the token file (chmod 600 + macOS user separation is the only defense). The user's own account is the trust boundary; same as `data/secrets.db` for the vault.
 
@@ -188,13 +198,13 @@ No new environment variables; the sidecar URL is in the vault as `SIDECAR_URL`.
   - `/health` returns 200 with the expected shape
   - `/tts` returns 200 + bytes when `say` succeeds; 503 when not on macOS (mocked)
   - `/stt` returns 200 + text when whisper.cpp succeeds; 500 + JSON error when it fails
-  - `X-JARVIS-Token` rejected when missing or wrong
+  - `X-SIDECAR-Token` rejected when missing or wrong
   - Multipart body size cap rejects >5 MB with 413
 - `tests/test_sidecar_client.py` — mocks `httpx` to simulate sidecar responses. Tests:
   - `tts_via_sidecar` returns bytes on 200, None on connection error
   - `stt_via_sidecar` returns text on 200, "" on connection error
   - `sidecar_health` returns dict on 200, None on connection error
-  - All three send the X-JARVIS-Token header
+  - All three send the X-SIDECAR-Token header
 
 ### 8.2 Manual integration (per the existing `tests/test_classifier.py` / `tests/test_goal_drift.py` excluded-by-default pattern)
 
@@ -218,13 +228,20 @@ No new environment variables; the sidecar URL is in the vault as `SIDECAR_URL`.
 
 Total estimated effort: ~700 LOC + tests + docs. Implementable in 6–10 sub-tasks via `superpowers:subagent-driven-development`.
 
-## 11. Open questions for security-advisor
+## 11. Open questions — resolved by security-advisor review
 
-1. **Token file as the JARVIS↔sidecar trust root** — is mounting `~/Library/Application Support/jarvis-sidecar/` read-only into the container the right shape? Alternative: pass the token via Docker secret or env var (worse — env vars are visible to anything that can read /proc on the host).
-2. **Logging discipline** — the sidecar logs request metadata only (duration, bytes). Confirm `whisper.cpp`'s stderr (which may contain progress info or audio-derived metadata) is captured to the rotating log file and not stdout/stderr that could leak elsewhere.
-3. **Process lifetime** — should the sidecar exit if its config dir disappears? If JARVIS is uninstalled but the launchctl plist stays loaded, the sidecar runs orphan. Document the uninstall flow.
-4. **Audio temp files** — `tempfile.mkdtemp` creates files in `/tmp` by default (which is `/var/folders/...` on macOS, user-owned). Acceptable per the threat model — same place macOS `say` writes its output. Confirm.
-5. **Resource limits** — should we cap memory/CPU on the sidecar via `launchctl` limits? Whisper base.en uses ~600 MB RSS; a malformed audio file could push it higher.
+1. **Token file shape:** Bind-mount accepted with tighter granularity — mount only the `token` file, not the parent dir (see §6). Docker secrets / env vars rejected (env vars visible to anything reading /proc; secrets are functionally equivalent on macOS).
+2. **Logging discipline:** Resolved — whisper-cli stdout → `DEVNULL`, stderr captured only for error detection, NEVER written verbatim to the rotating log. Rotating log records request metadata only. See §3.2 `/stt` step 3.
+3. **Process lifetime:** Teardown is BLOCKING for ship — `host-sidecar/teardown.sh` + `docs/DOCKER.md` instructions before `docker compose down`. `KeepAlive: true` in the plist so the sidecar recovers from crashes. See §3.1.
+4. **Audio temp files:** Accepted — `tempfile.mkdtemp(prefix="jarvis-sidecar-")` in macOS user-owned temp dir is within the documented threat model. All three temp files (upload / WAV / whisper output `.txt`) MUST be cleaned in `finally`. See §3.2 step 5.
+5. **Resource limits:** DEFERRED to a follow-up. The whisper base.en process uses ~600 MB RSS; cap via launchctl `SoftResourceLimits` `MemoryLimit` is a hardening item but not blocking the first ship. Tracked under §12.
+
+### Non-blocking recommendations from security-advisor (folded into the spec)
+
+- **`/health` authentication:** REQUIRED — `/health` now authenticates via `X-SIDECAR-Token` (table in §3.2 already updated). Loopback bind is the primary defense; token is defense in depth.
+- **launchctl `KeepAlive: true`:** mandated in §3.1 (was implicit follow-up; now required).
+- **Header-name disambiguation:** the sidecar token uses `X-SIDECAR-Token` header (renamed from `X-JARVIS-Token`) to make the two trust contexts visually distinct in code + logs. The JARVIS vault token continues to use `X-JARVIS-Token`. Confusion vector eliminated.
+- **Source-IP check on sidecar:** rejected as fragile (Docker bridge gateway IPs vary). Document in SECURITY.md that the loopback bind + token is the boundary.
 
 ## 12. Out-of-scope follow-ups (will be separate PRs)
 
