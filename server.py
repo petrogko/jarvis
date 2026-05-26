@@ -230,6 +230,8 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
 - [ACTION:CREATE_NOTE] title ||| body — create a new Apple Note. For saving plans, ideas, lists.
   "save that as a note" → [ACTION:CREATE_NOTE] Day Plan March 19 ||| Morning: client calls. Afternoon: TikTok dashboard. Evening: JARVIS improvements.
 - [ACTION:READ_NOTE] title search — read an existing Apple Note by title keyword.
+- [ACTION:GH_ISSUES_LIST owner/repo] — list open GitHub issues on a repo (e.g. petrogko/jarvis)
+- [ACTION:GH_ISSUE_CREATE owner/repo|title|body] — open a new GitHub issue
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
 
@@ -864,7 +866,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     caller behaves as if no action was emitted.
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|GH_ISSUES_LIST|GH_ISSUE_CREATE)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if not match:
@@ -2635,6 +2637,57 @@ async def voice_handler(ws: WebSocket):
                                             except Exception:
                                                 pass
                                     asyncio.create_task(_read_and_report(embedded_action["target"].strip(), ws))
+                                elif embedded_action["action"] == "gh_issues_list":
+                                    owner_repo = embedded_action["target"].strip()
+                                    if not owner_repo:
+                                        response_text = "I need a repository name, sir. Something like owner/repo."
+                                    else:
+                                        from openclaw_ports import gh_issues as _gh_issues
+                                        _gh_token = _vault_get("GITHUB_TOKEN")
+                                        async def _do_gh_issues_list(
+                                            _or=owner_repo, _tok=_gh_token
+                                        ) -> str:
+                                            try:
+                                                issues = await _gh_issues.list_open_issues(_or, token=_tok, limit=10)
+                                            except _gh_issues.GhIssuesError as _e:
+                                                log.warning("GH_ISSUES_LIST failed: %s", _e)
+                                                return f"I'm afraid I couldn't reach GitHub, sir. {_e}"
+                                            if not issues:
+                                                return f"No open issues on {_or}, sir."
+                                            top3 = issues[:3]
+                                            top_str = "; ".join(
+                                                f"#{i['number']}: {i['title']}" for i in top3
+                                            )
+                                            return (
+                                                f"{len(issues)} open issue{'s' if len(issues) != 1 else ''} on {_or}, sir. "
+                                                f"Top: {top_str}."
+                                            )
+                                        asyncio.create_task(
+                                            _lookup_and_report("github-issues", _do_gh_issues_list, ws, history=history, voice_state=voice_state)
+                                        )
+                                elif embedded_action["action"] == "gh_issue_create":
+                                    raw_arg = embedded_action["target"].strip()
+                                    parts = raw_arg.split("|", 2)
+                                    if len(parts) < 3 or not parts[0].strip() or not parts[1].strip():
+                                        response_text = "I need the repo, title, and body to create an issue, sir. Try: owner/repo|title|body."
+                                    else:
+                                        owner_repo = parts[0].strip()
+                                        issue_title = parts[1].strip()
+                                        issue_body = parts[2].strip()
+                                        from openclaw_ports import gh_issues as _gh_issues
+                                        _gh_token = _vault_get("GITHUB_TOKEN")
+                                        async def _do_gh_issue_create(
+                                            _or=owner_repo, _t=issue_title, _b=issue_body, _tok=_gh_token
+                                        ) -> str:
+                                            try:
+                                                result = await _gh_issues.create_issue(_or, title=_t, body=_b, token=_tok)
+                                            except _gh_issues.GhIssuesError as _e:
+                                                log.warning("GH_ISSUE_CREATE failed: %s", _e)
+                                                return f"I'm afraid I couldn't create the issue, sir. {_e}"
+                                            return f"Done, sir. Issue #{result['number']} opened on {_or}."
+                                        asyncio.create_task(
+                                            _lookup_and_report("github-create-issue", _do_gh_issue_create, ws, history=history, voice_state=voice_state)
+                                        )
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
@@ -2722,7 +2775,8 @@ class PreferencesUpdate(BaseModel):
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
                "TTS_PROVIDER", "TTS_VOICE",
-               "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
+               "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
+               "GITHUB_TOKEN"}
     if body.key_name not in allowed:
         raise HTTPException(status_code=400, detail="key not allowed")
     sess = _vault_mod.session()
@@ -2809,6 +2863,7 @@ async def api_get_preferences():
         "calendar_accounts": vault_dict.get("CALENDAR_ACCOUNTS", "auto"),
         "tts_provider": vault_dict.get("TTS_PROVIDER", "auto"),
         "tts_voice": vault_dict.get("TTS_VOICE", ""),
+        "github_token_set": bool(vault_dict.get("GITHUB_TOKEN", "").strip()),
     }
 
 @app.post("/api/settings/preferences")
