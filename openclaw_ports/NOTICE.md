@@ -12,6 +12,7 @@ Modules in this directory are ported from OpenClaw
 | Module             | Upstream path                                              | Ported at SHA                              | Last resync |
 |--------------------|------------------------------------------------------------|--------------------------------------------|-------------|
 | `tts_local_cli.py` | `extensions/tts-local-cli/speech-provider.ts`              | `125d82cab2952f87f532106a368d54e526141026` | 2026-05-25  |
+| `gh_issues.py`     | `skills/gh-issues/SKILL.md`                                | `125d82cab2952f87f532106a368d54e526141026` | 2026-05-25  |
 
 ## Resync workflow
 
