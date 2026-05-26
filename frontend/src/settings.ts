@@ -32,6 +32,7 @@ interface PreferencesResponse {
   calendar_accounts: string;
   tts_provider: string;
   tts_voice: string;
+  github_token_set?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,15 @@ function buildPanelHTML(): string {
               <input type="password" id="input-fish-key" placeholder="Fish Audio key..." />
               <button class="settings-btn" id="btn-test-fish">Test</button>
               <span class="status-dot" id="status-fish"></span>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>GitHub Token</label>
+            <div class="settings-input-row">
+              <input type="password" id="input-github-token" placeholder="ghp_... or github_pat_..." />
+              <button class="settings-btn" id="btn-save-github-token">Save</button>
+              <span class="status-dot" id="status-github-token"></span>
             </div>
           </div>
 
@@ -281,6 +291,8 @@ async function loadPreferences() {
     // Hydrate localStorage so speakViaBrowser picks up the user's choice
     // without re-fetching settings on every utterance.
     setPreferredVoice(prefs.tts_voice || "");
+    // GitHub token saved indicator
+    setDotStatus("status-github-token", prefs.github_token_set ? "green" : "red");
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
   }
@@ -345,6 +357,15 @@ function wireEvents() {
     // Mirror to localStorage so the browser-TTS fallback picks it up on
     // the next utterance without a settings round-trip.
     setPreferredVoice(voice);
+  });
+
+  // Save GitHub Token
+  document.getElementById("btn-save-github-token")?.addEventListener("click", async () => {
+    const ghToken = (document.getElementById("input-github-token") as HTMLInputElement).value.trim();
+    if (ghToken) {
+      await apiPost("/api/settings/keys", { key_name: "GITHUB_TOKEN", key_value: ghToken });
+      setDotStatus("status-github-token", "green");
+    }
   });
 
   // Test Anthropic
