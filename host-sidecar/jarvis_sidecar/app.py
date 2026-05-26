@@ -8,10 +8,12 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from pydantic import BaseModel
 
 from . import config
 from .auth import HEADER_NAME, header_matches
+from .tts import synthesize, TTSError
 
 
 def _load_token() -> str:
@@ -31,6 +33,11 @@ def _whisper_model_name() -> str:
     return config.DEFAULT_WHISPER_MODEL
 
 
+class _TTSBody(BaseModel):
+    text: str
+    voice: str = "Alex"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="jarvis-sidecar", version="0.1.0")
     token = _load_token()
@@ -46,6 +53,17 @@ def create_app() -> FastAPI:
             "whisper_model": _whisper_model_name(),
             "say_available": _say_available(),
         }
+
+    @app.post("/tts")
+    async def tts(body: _TTSBody, _auth: None = Depends(require_token)) -> Response:
+        try:
+            audio = await synthesize(body.text, body.voice)
+        except TTSError as e:
+            msg = str(e)
+            if "empty" in msg.lower():
+                raise HTTPException(status_code=400, detail=msg)
+            raise HTTPException(status_code=500, detail=msg)
+        return Response(content=audio, media_type="audio/m4a")
 
     return app
 
