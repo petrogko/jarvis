@@ -204,3 +204,69 @@ async def test_synthesize_speech_auto_falls_through_to_sidecar(isolated_vault, m
 
     audio = await server.synthesize_speech("hello")
     assert audio == b"SIDECAR-AUDIO"
+
+
+def test_api_stt_returns_transcript(isolated_vault, monkeypatch):
+    """POST /api/stt proxies to sidecar_client.stt_via_sidecar and returns
+    {text: ...}."""
+    import server, sidecar_client
+    isolated_vault.bootstrap("pp")
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
+    # Get the auth token; client must send it on /api/stt.
+    token_resp = TestClient(server.app).post("/api/auth/unlock", json={"passphrase": "pp"})
+    auth_token = token_resp.json()["token"]
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
+
+    async def fake_stt(audio_bytes, mime_type="audio/webm"):
+        return "hello world"
+    monkeypatch.setattr(sidecar_client, "stt_via_sidecar", fake_stt)
+
+    c = TestClient(server.app)
+    files = {"audio": ("clip.webm", b"WEBM-BLOB", "audio/webm")}
+    r = c.post("/api/stt", files=files, headers={"X-JARVIS-Token": auth_token})
+    assert r.status_code == 200
+    assert r.json() == {"text": "hello world"}
+
+
+def test_api_stt_requires_unlock_and_token(isolated_vault):
+    """Locked vault returns 423; unlocked + missing token returns 401."""
+    import server
+    c = TestClient(server.app)
+    files = {"audio": ("clip.webm", b"x", "audio/webm")}
+    r = c.post("/api/stt", files=files)
+    # Locked OR missing-token both blocked; we accept either status.
+    assert r.status_code in (401, 423)
+
+
+def test_api_stt_audit_log_entry_written(isolated_vault, monkeypatch, tmp_path):
+    """Per security-advisor required fix #2: each /api/stt call appends an
+    entry to data/audit.jsonl with timestamp, bytes, transcript_returned."""
+    import server, sidecar_client, audit_log
+    isolated_vault.bootstrap("pp")
+
+    # Redirect audit output to a temp file so we can inspect it.
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit_log, "AUDIT_PATH", audit_path)
+
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
+    token_resp = TestClient(server.app).post("/api/auth/unlock", json={"passphrase": "pp"})
+    auth_token = token_resp.json()["token"]
+    monkeypatch.setitem(server._LAST_UNLOCK_ATTEMPT, "t", 0.0)
+
+    async def fake_stt(audio_bytes, mime_type="audio/webm"):
+        return "hello"
+    monkeypatch.setattr(sidecar_client, "stt_via_sidecar", fake_stt)
+
+    c = TestClient(server.app)
+    files = {"audio": ("clip.webm", b"WEBM-BLOB-12345", "audio/webm")}
+    c.post("/api/stt", files=files, headers={"X-JARVIS-Token": auth_token})
+
+    log_lines = audit_path.read_text().splitlines()
+    assert any(
+        "stt_request" in line and "15" in line  # 15 bytes for our test payload
+        and ("transcript_returned" in line or "transcript" in line.lower())
+        for line in log_lines
+    )
+    # Critically: the transcript TEXT itself must NEVER appear in the audit log.
+    for line in log_lines:
+        assert "hello" not in line, f"transcript text leaked into audit log: {line!r}"

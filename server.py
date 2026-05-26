@@ -34,7 +34,7 @@ from typing import Optional
 
 import anthropic
 import httpx
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -2787,6 +2787,44 @@ async def api_settings_keys(body: KeyUpdate):
         raise HTTPException(status_code=423, detail="vault locked")
     sess.settings.set(body.key_name, body.key_value)
     return {"ok": True}
+
+
+@app.post("/api/stt")
+async def api_stt(request: Request, audio: UploadFile = File(...)) -> dict:
+    """Speech-to-text via the host sidecar. Replaces Chrome Web Speech for
+    privacy when STT_PROVIDER=whisper.
+
+    Per security-advisor required fix #5: the transcript returned by this
+    endpoint enters the system as user-provided text — same trust posture as
+    Web Speech transcripts. Callers route it back through the existing voice
+    handler (no privileged bypass).
+    """
+    import sidecar_client as _sidecar_client
+
+    contents = await audio.read()
+
+    transcript = await _sidecar_client.stt_via_sidecar(
+        contents, mime_type=audio.content_type or "audio/webm"
+    )
+
+    # Audit log (security-advisor required fix #2): metadata only.
+    # The transcript TEXT is NEVER logged. transcript_returned is a bool.
+    try:
+        import audit_log as _audit_log
+        ip = request.client.host if request and request.client else ""
+        n_bytes = len(contents)
+        transcript_returned = bool(transcript)
+        _audit_log.record(
+            action="stt_request",
+            source="api-stt",
+            target=f"ip={ip} bytes={n_bytes} transcript_returned={transcript_returned}",
+            success=transcript_returned,
+        )
+    except Exception:
+        pass  # audit failures must not break user-facing requests
+
+    return {"text": transcript}
+
 
 @app.post("/api/settings/test-anthropic")
 async def api_test_anthropic(body: KeyTest):
