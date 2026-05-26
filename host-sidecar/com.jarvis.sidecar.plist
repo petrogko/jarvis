@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jarvis.sidecar</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@VENV@@/bin/python</string>
+    <string>-m</string>
+    <string>jarvis_sidecar</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardErrorPath</key>
+  <string>@@HOME@@/Library/Logs/jarvis-sidecar.log</string>
+
+  <key>StandardOutPath</key>
+  <string>@@HOME@@/Library/Logs/jarvis-sidecar.log</string>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>
