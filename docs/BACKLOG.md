@@ -133,6 +133,9 @@ _(none — vault branch `feat/ui-config-encrypted-2026-05` is in review)_
 
 ## Done (recent)
 
+- **P11 wave-1 port 2: `gh_issues`** (PR #18): `[ACTION:GH_ISSUES_LIST owner/repo]` + `[ACTION:GH_ISSUE_CREATE owner/repo|title|body]`. Vault key `GITHUB_TOKEN`. MIT-attributed to OpenClaw commit `125d82c`. Works in Docker (pure HTTPS to `api.github.com`).
+- **P11 wave-1 port 3: `apple_notes` — SKIPPED with rationale.** OpenClaw's skill is a markdown wrapper around the third-party `memo` brew CLI. JARVIS's existing `notes_access.py` already covers read/search/create/list-folders via AppleScript. OpenClaw's net-add (delete/edit/move/export) overlaps with destructive operations that JARVIS deliberately doesn't support (same safety stance as Mail being read-only). Move/export alone deemed insufficient to justify an external CLI dependency.
+- **Frontend UX bundle (PRs #16 + #17):** type-to-JARVIS text input, transcript conversation panel showing USER + JARVIS lines, backend always emits text (even when no audio bytes), browser speechSynthesis fallback, voice picker dropdown, stop button, mic-default-off.
 - **P11 wave-1 port 1 (= P3 privacy win):** `tts_local_cli` ported under `openclaw_ports/` (MIT, attributed to OpenClaw commit `125d82cab2952f87f532106a368d54e526141026`). macOS host now uses local `say` for TTS by default; Fish Audio remains as automatic fallback. New vault keys: `TTS_PROVIDER`, `TTS_VOICE`. Eliminates third-party TTS egress on macOS.
 - **P1 + P2** merged into a single rollout in `feat/ui-config-encrypted-2026-05`: SQLCipher-encrypted dual-DB vault (Argon2id KDF), UI lock-screen, safe legacy migration, auth tokens moved to vault, settings + memory endpoints routed through vault. (P1+P2 merged into a single rollout in feat/ui-config-encrypted-2026-05.)
 - 5-persona dev-session infrastructure + tripwire hook + CLAUDE.md routing (PR #9, branch `feat/personas-design-2026-05`)
