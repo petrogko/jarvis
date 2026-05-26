@@ -166,3 +166,41 @@ def test_settings_keys_accepts_tts_provider(isolated_vault, monkeypatch):
     sess = isolated_vault.unlock("pp")
     assert sess.settings.get("TTS_PROVIDER") == "test-value"
     assert sess.settings.get("TTS_VOICE") == "test-value"
+
+
+@pytest.mark.anyio
+async def test_synthesize_speech_uses_sidecar_when_configured(isolated_vault, monkeypatch):
+    """TTS_PROVIDER=sidecar routes through sidecar_client (not Fish, not local)."""
+    import server, sidecar_client
+    isolated_vault.bootstrap("pp")
+    isolated_vault.unlock("pp")
+    sess = isolated_vault.session()
+    sess.settings.set("TTS_PROVIDER", "sidecar")
+
+    async def fake_tts(text, voice="Alex"):
+        return b"SIDECAR-AUDIO"
+    monkeypatch.setattr(sidecar_client, "tts_via_sidecar", fake_tts)
+
+    audio = await server.synthesize_speech("hello")
+    assert audio == b"SIDECAR-AUDIO"
+
+
+@pytest.mark.anyio
+async def test_synthesize_speech_auto_falls_through_to_sidecar(isolated_vault, monkeypatch):
+    """TTS_PROVIDER=auto on a host where local say is NOT available should
+    try the sidecar before falling back to Fish."""
+    import server, sidecar_client
+    from openclaw_ports import tts_local_cli
+    isolated_vault.bootstrap("pp")
+    isolated_vault.unlock("pp")
+    sess = isolated_vault.session()
+    sess.settings.set("TTS_PROVIDER", "auto")
+    # No FISH_API_KEY set; sidecar must be the next thing tried.
+
+    monkeypatch.setattr(tts_local_cli, "is_available", lambda: False)
+    async def fake_tts(text, voice="Alex"):
+        return b"SIDECAR-AUDIO"
+    monkeypatch.setattr(sidecar_client, "tts_via_sidecar", fake_tts)
+
+    audio = await server.synthesize_speech("hello")
+    assert audio == b"SIDECAR-AUDIO"

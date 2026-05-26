@@ -1209,19 +1209,20 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio from text.
 
     Provider chosen by vault key `TTS_PROVIDER`:
-      - "auto" (default): try macOS `say` via openclaw_ports.tts_local_cli;
-        fall back to Fish Audio if local TTS is unavailable or fails.
-      - "local_cli":      use only macOS `say`; return None on failure.
-      - "fish_audio":     skip local; go straight to Fish Audio.
+      - "auto": try local `say` (host-only) → sidecar (Docker) → Fish (cloud)
+      - "local_cli": local say only; None on failure
+      - "sidecar": sidecar only; None on failure
+      - "fish_audio": Fish only
     """
     from openclaw_ports import tts_local_cli
+    import sidecar_client
 
     provider = (_vault_get("TTS_PROVIDER", "auto") or "auto").strip().lower()
+    voice = _vault_get("TTS_VOICE", "Alex") or "Alex"
 
-    # Local CLI path.
+    # Local CLI path (only viable on macOS host install).
     if provider in ("auto", "local_cli") and tts_local_cli.is_available():
         try:
-            voice = _vault_get("TTS_VOICE", "Alex") or "Alex"
             audio = await tts_local_cli.synthesize(text, voice=voice)
             _session_tokens["tts_calls"] += 1
             _append_usage_entry(0, 0, "tts")
@@ -1230,38 +1231,40 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
             log.warning("local TTS failed: %s", e)
             if provider == "local_cli":
                 return None
-            # auto: fall through to Fish Audio.
     elif provider == "local_cli":
         log.warning("TTS_PROVIDER=local_cli but local TTS unavailable; no audio")
         return None
 
-    # Fish Audio path (unchanged behavior).
+    # Sidecar path (Docker host with the host-sidecar daemon running).
+    if provider in ("auto", "sidecar"):
+        audio = await sidecar_client.tts_via_sidecar(text, voice=voice)
+        if audio is not None:
+            _session_tokens["tts_calls"] += 1
+            _append_usage_entry(0, 0, "tts")
+            return audio
+        if provider == "sidecar":
+            return None
+        # auto: fall through to Fish.
+
+    # Fish Audio path (existing, unchanged).
     fish_api_key = _vault_get("FISH_API_KEY")
     fish_voice_id = _vault_get("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")
     if not fish_api_key:
         log.warning("FISH_API_KEY not set, skipping TTS")
         return None
-
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
             response = await http.post(
                 FISH_API_URL,
-                headers={
-                    "Authorization": f"Bearer {fish_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "reference_id": fish_voice_id,
-                    "format": "mp3",
-                },
+                headers={"Authorization": f"Bearer {fish_api_key}", "Content-Type": "application/json"},
+                json={"text": text, "reference_id": fish_voice_id, "format": "mp3"},
             )
-            if response.status_code == 200:
-                _session_tokens["tts_calls"] += 1
-                _append_usage_entry(0, 0, "tts")
-                return response.content
-            log.error(f"TTS error: {response.status_code}")
-            return None
+        if response.status_code == 200:
+            _session_tokens["tts_calls"] += 1
+            _append_usage_entry(0, 0, "tts")
+            return response.content
+        log.error(f"TTS error: {response.status_code}")
+        return None
     except Exception as e:
         log.error(f"TTS error: {e}")
         return None
