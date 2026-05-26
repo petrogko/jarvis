@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import sys
 
+import uvicorn
+
+from . import config
+
 
 def main() -> int:
-    # Wired in T2 once the FastAPI app exists.
-    print("jarvis-sidecar: entry-point stub. T2 wires the FastAPI app.", file=sys.stderr)
+    uvicorn.run(
+        "jarvis_sidecar.app:app",
+        host=config.BIND_HOST,
+        port=config.BIND_PORT,
+        log_level="info",
+    )
     return 0
 
 
