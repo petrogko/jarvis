@@ -13,6 +13,7 @@ import { awaitUnlock } from "./lock-screen";
 import { withAuthHeaders } from "./auth-token";
 import { attachTranscript, toggleTranscript, pushUserLine } from "./transcript-panel";
 import { attachTextInput } from "./text-input";
+import { startRecording, type RecordingSession } from "./stt";
 import "./style.css";
 
 (async () => {
@@ -27,6 +28,19 @@ import "./style.css";
   // Mic defaults to OFF — user explicitly unmutes when they want voice input.
   // Typing still works via the text input regardless of mute state.
   let isMuted = true;
+
+  let sttMode: "web_speech" | "whisper" = "web_speech";
+  let activeRecording: RecordingSession | null = null;
+
+  async function loadSttPref() {
+    try {
+      const r = await fetch("/api/settings/preferences", withAuthHeaders());
+      if (!r.ok) return;
+      const prefs = await r.json();
+      if (prefs.stt_provider === "whisper") sttMode = "whisper";
+    } catch { /* default web_speech */ }
+  }
+  loadSttPref();
 
   const statusEl = document.getElementById("status-text")!;
   const errorEl = document.getElementById("error-text")!;
@@ -238,8 +252,37 @@ import "./style.css";
     transition("idle");
   });
 
-  btnMute.addEventListener("click", (e) => {
+  btnMute.addEventListener("click", async (e) => {
     e.stopPropagation();
+
+    // Whisper STT: toggle record/stop via sidecar /api/stt
+    if (sttMode === "whisper") {
+      if (activeRecording) {
+        try {
+          const text = await activeRecording.stop();
+          if (text) {
+            socket.send({ type: "transcript", text, isFinal: true });
+            pushUserLine(text);
+            transition("thinking");
+          } else {
+            transition("idle");
+          }
+        } catch (err) {
+          console.error("[stt] failed:", err);
+          transition("idle");
+        } finally {
+          activeRecording = null;
+          btnMute.classList.remove("recording");
+        }
+        return;
+      }
+      activeRecording = await startRecording();
+      btnMute.classList.add("recording");
+      transition("listening");
+      return;
+    }
+
+    // Existing Web Speech path (UNTOUCHED below this line):
     isMuted = !isMuted;
     btnMute.classList.toggle("muted", isMuted);
     if (isMuted) {

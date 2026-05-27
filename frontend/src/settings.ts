@@ -32,6 +32,7 @@ interface PreferencesResponse {
   calendar_accounts: string;
   tts_provider: string;
   tts_voice: string;
+  stt_provider?: string;  // "web_speech" | "whisper"
   github_token_set?: boolean;
 }
 
@@ -120,6 +121,17 @@ function buildPanelHTML(): string {
             <div class="settings-input-row">
               <input type="text" id="input-fish-voice-id" placeholder="612b878b113047d9a770c069c8b4fdfe" />
               <button class="settings-btn" id="btn-save-voice-id">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>STT Provider</label>
+            <div class="settings-input-row">
+              <select id="input-stt-provider">
+                <option value="web_speech">Web Speech (browser → Google)</option>
+                <option value="whisper">Whisper (local host sidecar)</option>
+              </select>
+              <button class="settings-btn" id="btn-save-stt-provider">Save</button>
             </div>
           </div>
 
@@ -281,10 +293,12 @@ async function loadPreferences() {
     const calEl = document.getElementById("input-calendar-accounts") as HTMLTextAreaElement;
     const ttsProviderEl = document.getElementById("input-tts-provider") as HTMLSelectElement;
     const ttsVoiceEl = document.getElementById("input-tts-voice") as HTMLSelectElement;
+    const sttProviderEl = document.getElementById("input-stt-provider") as HTMLSelectElement;
     if (nameEl) nameEl.value = prefs.user_name || "";
     if (honEl) honEl.value = prefs.honorific || "sir";
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
     if (ttsProviderEl) ttsProviderEl.value = prefs.tts_provider || "auto";
+    if (sttProviderEl) sttProviderEl.value = prefs.stt_provider || "web_speech";
     if (ttsVoiceEl) {
       populateVoiceOptions(ttsVoiceEl, prefs.tts_voice || "");
     }
@@ -342,6 +356,12 @@ function wireEvents() {
     if (voiceId) {
       await apiPost("/api/settings/keys", { key_name: "FISH_VOICE_ID", key_value: voiceId });
     }
+  });
+
+  // Save STT provider
+  document.getElementById("btn-save-stt-provider")?.addEventListener("click", async () => {
+    const value = (document.getElementById("input-stt-provider") as HTMLSelectElement).value;
+    await apiPost("/api/settings/keys", { key_name: "STT_PROVIDER", key_value: value });
   });
 
   // Save TTS provider

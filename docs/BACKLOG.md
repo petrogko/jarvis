@@ -8,37 +8,6 @@ Living tracker for in-flight and pending work. Each entry: short rationale + sta
 
 ## Priority queue (next session)
 
-### P3a — Privacy: local Whisper STT
-**Status:** proposed (TTS half shipped as P11 wave-1 — see Done below)
-**Persona routing:** `software-architect` (touches voice-loop trust boundary; STT moves from browser→backend) → implementation → review/test.
-
-**Why:** today Chrome Web Speech sends audio to Google. Eliminated by going local.
-
-**Sketch:**
-- **STT:** frontend captures raw PCM via MediaRecorder → POSTs to `/api/stt` → backend runs `faster-whisper` or `whisper.cpp` (small or base model). Adds a Python dep — audit.
-- Voice fidelity for TTS: already resolved by `tts_local_cli` (see Done below).
-
----
-
-### P13 — TTS host-sidecar (make local TTS work inside Docker)
-**Status:** proposed (architectural)
-**Persona routing:** `software-architect` (new trust boundary: host↔container HTTP) → `security-advisor` (host-side daemon, localhost-only auth) → implementation → review/test.
-
-**Why:** `openclaw_ports/tts_local_cli` only works on macOS host because `say` is a macOS binary. JARVIS-in-Docker currently falls back to Fish Audio, defeating the privacy win from P11 wave-1. A small host-resident sidecar that exposes `say` over `http://host.docker.internal:<port>/tts` lets the Docker container call local TTS without losing isolation.
-
-**Sketch (must brainstorm + spec first):**
-- **Sidecar:** ~100 LOC Python or Go daemon. Accepts `{"text": "...", "voice": "Alex"}` POST. Calls `say -v ... -o /tmp/out.m4a --file-format=m4af --data-format=aac --` then returns the bytes. Token-authed (same vault token JARVIS uses) so only JARVIS can call it.
-- **Server-side:** `synthesize_speech` gets a new branch when `is_available()` returns False but `TTS_SIDECAR_URL` is set in the vault — call the sidecar instead of falling back to Fish.
-- **Install:** `launchctl` plist on the host runs the sidecar at login. Documented in DOCKER.md as the opt-in path for privacy + Docker.
-- **Trust boundary:** sidecar binds to 127.0.0.1 only; Docker calls via `host.docker.internal`. Token shared via shared filesystem (vault-mounted dir).
-
-**Open questions:**
-- Sidecar language: Python (matches JARVIS) or Go (single static binary, easier to ship)?
-- How does the sidecar get the auth token? Read from `data/secrets.db` via SQLCipher with a known passphrase? Or use a separate shared-secret file owned by the user?
-- Failure mode when sidecar is down: fall back to Fish, or hard-fail with TTS_PROVIDER=local_cli?
-
----
-
 ### P4 — Egress sidecar (kernel-level network gate)
 **Status:** documented in `docs/DOCKER.md` as future work
 **Persona routing:** `software-architect` → `security-advisor` → implementation.
@@ -133,6 +102,7 @@ _(none — vault branch `feat/ui-config-encrypted-2026-05` is in review)_
 
 ## Done (recent)
 
+- **P3a + P13 merged (PR #20):** jarvis-sidecar — combined macOS host daemon exposing /tts (wraps `say`) and /stt (wraps `whisper-cli`). Eliminates the last two cloud voice egresses (Google Web Speech for STT, Fish Audio for TTS when in Docker). New vault keys: `STT_PROVIDER`, `SIDECAR_URL`, plus `TTS_PROVIDER=sidecar` value. Sidecar installs via `host-sidecar/setup.sh` + launchctl.
 - **P11 wave-1 port 2: `gh_issues`** (PR #18): `[ACTION:GH_ISSUES_LIST owner/repo]` + `[ACTION:GH_ISSUE_CREATE owner/repo|title|body]`. Vault key `GITHUB_TOKEN`. MIT-attributed to OpenClaw commit `125d82c`. Works in Docker (pure HTTPS to `api.github.com`).
 - **P11 wave-1 port 3: `apple_notes` — SKIPPED with rationale.** OpenClaw's skill is a markdown wrapper around the third-party `memo` brew CLI. JARVIS's existing `notes_access.py` already covers read/search/create/list-folders via AppleScript. OpenClaw's net-add (delete/edit/move/export) overlaps with destructive operations that JARVIS deliberately doesn't support (same safety stance as Mail being read-only). Move/export alone deemed insufficient to justify an external CLI dependency.
 - **Frontend UX bundle (PRs #16 + #17):** type-to-JARVIS text input, transcript conversation panel showing USER + JARVIS lines, backend always emits text (even when no audio bytes), browser speechSynthesis fallback, voice picker dropdown, stop button, mic-default-off.
