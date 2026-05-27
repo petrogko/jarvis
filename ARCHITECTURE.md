@@ -20,6 +20,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
    interpolation); shell-exec call sites validated by `_assert_safe_path`.
 5. **Server → Claude Code subprocess.** Spawned via `claude -p`. Inherits
    user's permissions. Triple-gated for the self-modify path.
+6. **Server → host sidecar.** HTTP loopback (`host.docker.internal:9999`), `X-SIDECAR-Token` authenticated.
 
 ## Module map
 
@@ -48,6 +49,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
 | `templates.py`        | Response templates                               |
 | `tracking.py`         | Per-event usage tracking                         |
 | `openclaw_ports/`     | Python ports of MIT-licensed OpenClaw extensions. See `openclaw_ports/NOTICE.md`. Currently: `tts_local_cli` (macOS `say` wrapper, replaces Fish Audio when host is macOS). |
+| `host-sidecar/`       | macOS host daemon exposing `/tts` and `/stt`. NOT part of the Docker image; installed via `host-sidecar/setup.sh`. |
 
 ## Startup sequence (vault unlock → ready)
 1. Server starts; LLM/TTS clients are **not** constructed yet.
@@ -66,7 +68,8 @@ etc. All macOS integrations are AppleScript via `osascript`.
    conversation buffer. The response may contain `[ACTION:X]` tags.
 4. If an action tag is present, `actions.execute_action` dispatches it
    (e.g. `open_terminal`, `open_browser`, `open_claude_in_project`).
-5. The textual reply is passed to `synthesize_speech`: `text → synthesize_speech → (TTS_PROVIDER dispatch → local CLI || Fish Audio) → bytes`. The resulting audio bytes are base64-encoded and shipped over the WS as `{"type":"audio"}`.
+5. The textual reply is passed to `synthesize_speech`: `text → synthesize_speech → (TTS_PROVIDER dispatch → local CLI || sidecar || Fish Audio) → bytes`. When `TTS_PROVIDER=sidecar` or `auto` + sidecar available, the sidecar path is used instead of Fish Audio. The resulting audio bytes are base64-encoded and shipped over the WS as `{"type":"audio"}`.
+   - **STT branch:** if `STT_PROVIDER=whisper`, the browser POSTs raw audio to `/api/stt` → server forwards to sidecar (`/api/stt`) → sidecar runs `whisper-cli` → transcript returned. Step 1 above then uses that transcript instead of Chrome Web Speech.
 6. Conversation buffer is rolled forward; old messages summarized.
 
 ## Persistence

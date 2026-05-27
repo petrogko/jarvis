@@ -39,6 +39,8 @@ disabled by default; opting in requires presenting an auth token.
 | `data/jarvis.db` (memory + tasks)             | PII         | SQLCipher, same master key as `secrets.db`               | n/a                 |
 | `data/jarvis.db.pre-encrypt.bak`, `data/.env.bootstrap.pre-encrypt.bak` | Sensitive | Plaintext migration backups, mode 0600; auto-deleted on second successful unlock after migration | n/a |
 | `data/audit.jsonl`                            | Internal    | Deliberately plaintext — forensic preservation (see note below) | n/a       |
+| Sidecar token                                 | Secret      | `~/Library/Application Support/jarvis-sidecar/token` (mode 0600) | `X-SIDECAR-Token` header on loopback only |
+| Voice audio bytes (STT requests)              | Transient PII | Never persisted by JARVIS; temporarily in macOS user-owned tmpdir on sidecar (cleaned via `finally` on every request) | in-memory during `/api/stt` request only |
 | Calendar / Mail / Notes content               | PII         | OS apps                                                   | osascript stdout    |
 | Cost telemetry (`data/usage.jsonl`)           | Internal    | local                                                     | n/a                 |
 | Session token counters                        | Internal    | in-memory                                                 | `/api/usage` (auth) |
@@ -47,9 +49,26 @@ disabled by default; opting in requires presenting an auth token.
 
 ## TTS egress
 
-Fish Audio was the only TTS path pre-wave-1. As of `openclaw_ports/tts_local_cli` (MIT, ported from OpenClaw), macOS host installs default to local `say` for TTS — no third-party egress for the audio. The Docker container still falls back to Fish Audio because Linux lacks `say`. Provider chosen by vault key `TTS_PROVIDER` ∈ {auto, local_cli, fish_audio}; default 'auto' tries local first, falls back to Fish.
+Fish Audio was the only TTS path pre-wave-1. As of `openclaw_ports/tts_local_cli` (MIT, ported from OpenClaw), macOS host installs default to local `say` for TTS — no third-party egress for the audio. The Docker container still falls back to Fish Audio because Linux lacks `say`. Provider chosen by vault key `TTS_PROVIDER` ∈ {auto, local_cli, fish_audio, sidecar}; default 'auto' tries local first, falls back to Fish. When `TTS_PROVIDER=sidecar` (or `auto` + sidecar available), no Fish Audio egress occurs — audio is synthesized by the host sidecar via `say`.
+
+## STT egress
+
+By default, Chrome Web Speech sends audio to Google. When `STT_PROVIDER=whisper`, voice audio is POSTed to `/api/stt` on the JARVIS server and forwarded to the host sidecar, which runs `whisper-cli` locally. Voice audio never leaves the local machine. This replaces the Chrome Web Speech ↔ Google path entirely.
+
+## Trust boundaries
+
+| Boundary | Transport | Auth |
+|---|---|---|
+| Browser → JARVIS server | WebSocket / HTTP, loopback | `X-JARVIS-Token` (non-loopback only) |
+| JARVIS server → Anthropic | TLS | API key from vault |
+| JARVIS server → Fish Audio | TLS | API key from vault |
+| JARVIS server → macOS apps | `osascript` argv | n/a (runs as same user) |
+| JARVIS server → Claude Code subprocess | `claude -p` | inherits user permissions; triple-gated |
+| **JARVIS Docker → host sidecar** | **loopback HTTP (`host.docker.internal:9999`)** | **`X-SIDECAR-Token`; never reaches public internet** |
 
 ## What is intentionally NOT defended against
+- Another process running as the same macOS user can read the sidecar token file. `chmod 600` + user-account separation is the only defense — same boundary as `data/secrets.db` for the vault.
+- Compromised host-resident sidecar means transcripts/audio could be leaked locally. The sidecar's code is in this repo; auditable.
 - A user with a shell on the JARVIS host. The server runs as that user
   and can do anything they can do.
 - A user who explicitly sets `--host 0.0.0.0` and shares the token, or

@@ -112,6 +112,38 @@ backend on `127.0.0.1:8340`. We can add a `frontend` service later if you
 want to ship a built-and-served bundle, but that requires baking the
 backend URL at build time.
 
+## Optional host sidecar for local TTS/STT
+
+The default JARVIS-in-Docker setup uses **Fish Audio** for TTS and **Chrome Web Speech** for STT. Both leak data to third-party servers. To make voice fully local:
+
+1. Install the host sidecar (one-time):
+   ```bash
+   ./host-sidecar/setup.sh
+   ```
+   This installs `whisper-cpp` + `ffmpeg` via Homebrew, downloads the `ggml-base.en.bin` Whisper model (~150 MB), generates a shared-secret token, and loads a `launchctl` plist so the sidecar runs at login.
+
+2. Restart the JARVIS Docker container so it picks up the bind-mounted token:
+   ```bash
+   docker compose -p jarvis up -d --force-recreate
+   ```
+
+3. In the JARVIS settings UI, set:
+   - `TTS Provider` → `Sidecar (or auto)`
+   - `STT Provider` → `Whisper (local host sidecar)`
+
+After this, voice audio and JARVIS's response text never leave the Mac.
+
+### Uninstall
+
+ALWAYS run `./host-sidecar/teardown.sh` BEFORE `docker compose -p jarvis down -v` to cleanly unload the launchctl service.
+
+### Egress allowlist update
+
+When the sidecar is enabled, the JARVIS container's audited egress targets are:
+- `api.anthropic.com` (LLM, required)
+- `host.docker.internal:9999` (sidecar)
+- (`api.fish.audio` falls out of the allowlist once `TTS_PROVIDER` is `sidecar` or `local_cli`)
+
 ## Stopping
 
 ```bash
