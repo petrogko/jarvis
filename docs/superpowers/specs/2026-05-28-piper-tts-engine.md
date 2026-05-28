@@ -62,8 +62,24 @@ async def synthesize(text: str, voice: str) -> bytes:
     in PIPER_DATA_DIR (so it finds the model). Returns WAV bytes.
 
     Subprocess-only (GPL arm's length). DEVNULL on stdout/stderr. Temp file
-    cleaned in finally. Empty text → PiperError. Timeout enforced."""
+    cleaned in finally. Empty text → PiperError. Timeout enforced.
+
+    SECURITY (advisor required fixes):
+    - **Voice argv-injection guard (REQUIRED FIX #1):** `voice` flows into
+      argv as `-m <voice>` BEFORE the `--` separator, so a leading-dash or
+      path value would be parsed as a piper flag / arbitrary model path.
+      Validate `voice` against `^[A-Za-z0-9_-]{1,64}$`; raise PiperError
+      (→ HTTP 400) on mismatch. The `--` only protects `<text>`, NOT
+      `<voice>`.
+    - **Text-length cap (REQUIRED FIX #2):** reject `text` longer than
+      PIPER_MAX_TEXT_CHARS (2000) with PiperError (→ 400). Uncontrolled
+      WAV allocation in the asyncio loop is a resource-exhaustion vector.
+    """
 ```
+
+Add to config.py: `PIPER_MAX_TEXT_CHARS: Final[int] = 2000` and a
+`_VOICE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")` guard (or inline in
+piper_engine.py).
 
 ### 5.3 `/tts` route (`app.py`)
 Extend `_TTSBody` with `engine: str = "say"`. Route:
@@ -75,11 +91,17 @@ if body.engine == "piper" and piper.is_available():
 ```
 Output format differs by engine: `say` → `audio/m4a` (AAC), `piper` → `audio/wav`. Both decode fine in the browser's Web Audio API. The `X-TTS-Engine-Used` header tells the caller which fired.
 
+A `PiperError` from voice-validation or the text-length cap maps to **HTTP 400** (client error); subprocess failures map to **500** — same split as the `say` path.
+
+### 5.3a `/health` extension (advisor recommendation, folded in)
+Add `piper_available: bool` to the `/health` response (via `piper_engine.is_available()`), so the JARVIS backend can decide engine fallback without a round-trip synthesis attempt.
+
 ### 5.4 `setup.sh`
 Add steps:
 - Create `PIPER_VENV` (separate from the sidecar venv).
 - `<PIPER_VENV>/bin/pip install piper-tts`.
 - `<PIPER_VENV>/bin/python -m piper.download_voices en_GB-alan-medium --data-dir <PIPER_DATA_DIR>`.
+- **SHA256 pin (advisor recommendation, folded in):** after download, verify the `.onnx` against a SHA256 pinned in `setup.sh` via `shasum -a 256 -c`. Eliminates MITM of the model at setup. The exact hash is filled in at implementation time after a first trusted download. (Apply the same treatment to the whisper model download in the same PR for parity.)
 - Idempotent (skip if voice .onnx already present).
 - Make the Piper steps OPTIONAL with a `--with-piper` flag, OR prompt — Piper + model is ~60-80 MB and GPL; users who only want `say` shouldn't be forced to install it. **Decision:** gate behind `setup.sh --with-piper`; default setup installs whisper + say only.
 
@@ -113,7 +135,7 @@ JARVIS-side: `test_sidecar_client.py` — `tts_via_sidecar(engine="piper")` incl
 ## 9. Documentation
 
 - `host-sidecar/NOTICE.md` (or a new one if absent): Piper is GPL-3.0, invoked as an unmodified subprocess from an isolated venv; JARVIS does not import or modify it.
-- `SECURITY.md`: note the GPL-subprocess boundary; voice models downloaded from the Piper project's hosting at setup time (integrity: see open question §11).
+- `SECURITY.md`: note the GPL-subprocess boundary; voice models downloaded + SHA256-verified at setup time. **Data-classification table rows (advisor required fix #3):** add `TTS_ENGINE` and `TTS_PIPER_VOICE` — both class **Secret**, at-rest in `data/secrets.db` (SQLCipher), same as `TTS_VOICE`.
 - `ARCHITECTURE.md`: sidecar now has two TTS engines.
 - `docs/DOCKER.md`: `setup.sh --with-piper` documented.
 - `docs/BACKLOG.md`: mark this done.
@@ -128,13 +150,22 @@ JARVIS-side: `test_sidecar_client.py` — `tts_via_sidecar(engine="piper")` incl
 6. Docs (NOTICE/SECURITY/ARCHITECTURE/DOCKER/BACKLOG)
 7. Acceptance + PR
 
-## 11. Open questions for security-advisor
+## 11. Open questions — RESOLVED by security-advisor (GO-WITH-FIXES)
 
-1. **Voice-model download integrity.** `piper.download_voices` fetches `.onnx` weights over the network at setup time. Is there a checksum/signature? If not, a MITM could swap the model. Mitigation options: pin a known SHA256 in setup.sh and verify after download; or document the risk. What's the right bar for a single-user local tool?
-2. **GPL arm's-length confirmation.** Confirm that (a) installing piper-tts in an isolated venv and (b) invoking via `subprocess.exec([piper_venv_python, "-m", "piper", ...])` with NO `import piper` anywhere in JARVIS/sidecar code keeps JARVIS clear of GPL-3.0 copyleft. Flag if the `python -m piper` form (vs a standalone binary) weakens the boundary.
-3. **Module naming — RESOLVED.** Module is `piper_engine.py`, not `piper.py`, to eliminate any `import piper` shadowing risk. (Was an open question; resolved in §5.2.)
-4. **WAV size / DoS.** Piper WAV output for a long response could be large. Should the sidecar cap synthesis input length? `say` has no such cap today. Consistency vs. safety.
-5. **Subprocess resource use.** Piper loads an ONNX model per invocation (cold start ~1-2s). Acceptable for v1, or should the sidecar keep a warm piper process? (Leaning: cold start is fine for v1; note as future optimization.)
+1. **Model-download integrity** → SHA256 pin + `shasum -c` after download (§5.4); whisper model gets the same for parity. MITM otherwise out of the documented single-user threat model.
+2. **GPL arm's-length** → confirmed sound as engineering prudence (NOT legal advice): isolated venv + `subprocess.exec([...])` + zero `import piper` keeps JARVIS clear. Separate-process / separate-interpreter boundary is robust; `python -m piper` doesn't weaken it. NOTICE.md + SECURITY.md carry the GPL attribution.
+3. **Module naming** → `piper_engine.py` confirmed sufficient.
+4. **DoS cap** → REQUIRED: cap Piper input at 2000 chars (§5.2).
+5. **Cold-start** → no security implication; perf only. Warm-process deferred to a future spec (changes the process-boundary model, needs its own review).
+
+### Required fixes applied to this spec
+1. ✅ Voice argv-injection guard `^[A-Za-z0-9_-]{1,64}$` — §5.2
+2. ✅ Piper text-length cap (2000) — §5.2
+3. ✅ `TTS_ENGINE` + `TTS_PIPER_VOICE` data-classification rows (Secret) — §9
+
+### Recommendations folded in
+- SHA256 model pin (§5.4); `/health` `piper_available` (§5.3a).
+- Deferred follow-ups: `say` voice-validation backfill (pre-existing gap); warm Piper process.
 
 ## 12. Out-of-scope follow-ups
 - Warm/persistent piper process for lower latency
