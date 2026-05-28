@@ -34,6 +34,9 @@ interface PreferencesResponse {
   tts_voice: string;
   stt_provider?: string;  // "web_speech" | "whisper"
   github_token_set?: boolean;
+  user_location?: string;
+  user_latitude?: string;
+  user_longitude?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +200,21 @@ function buildPanelHTML(): string {
             <textarea id="input-calendar-accounts" rows="2" placeholder="auto (or comma-separated emails)"></textarea>
           </div>
 
+          <div class="settings-field">
+            <label>Location (city/region label JARVIS will say)</label>
+            <input type="text" id="input-user-location" placeholder="Toronto" />
+          </div>
+
+          <div class="settings-field">
+            <label>Latitude (decimal, e.g. 43.6532)</label>
+            <input type="text" id="input-user-latitude" placeholder="43.6532" />
+          </div>
+
+          <div class="settings-field">
+            <label>Longitude (decimal, e.g. -79.3832)</label>
+            <input type="text" id="input-user-longitude" placeholder="-79.3832" />
+          </div>
+
           <div class="settings-actions">
             <button class="settings-btn primary" id="btn-save-prefs">Save Preferences</button>
           </div>
@@ -294,11 +312,17 @@ async function loadPreferences() {
     const ttsProviderEl = document.getElementById("input-tts-provider") as HTMLSelectElement;
     const ttsVoiceEl = document.getElementById("input-tts-voice") as HTMLSelectElement;
     const sttProviderEl = document.getElementById("input-stt-provider") as HTMLSelectElement;
+    const locEl = document.getElementById("input-user-location") as HTMLInputElement;
+    const latEl = document.getElementById("input-user-latitude") as HTMLInputElement;
+    const lonEl = document.getElementById("input-user-longitude") as HTMLInputElement;
     if (nameEl) nameEl.value = prefs.user_name || "";
     if (honEl) honEl.value = prefs.honorific || "sir";
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
     if (ttsProviderEl) ttsProviderEl.value = prefs.tts_provider || "auto";
     if (sttProviderEl) sttProviderEl.value = prefs.stt_provider || "web_speech";
+    if (locEl) locEl.value = prefs.user_location || "";
+    if (latEl) latEl.value = prefs.user_latitude || "";
+    if (lonEl) lonEl.value = prefs.user_longitude || "";
     if (ttsVoiceEl) {
       populateVoiceOptions(ttsVoiceEl, prefs.tts_voice || "");
     }
@@ -417,7 +441,13 @@ function wireEvents() {
     const user_name = (document.getElementById("input-user-name") as HTMLInputElement).value.trim();
     const honorific = (document.getElementById("input-honorific") as HTMLSelectElement).value;
     const calendar_accounts = (document.getElementById("input-calendar-accounts") as HTMLTextAreaElement).value.trim();
-    await apiPost("/api/settings/preferences", { user_name, honorific, calendar_accounts });
+    const user_location = (document.getElementById("input-user-location") as HTMLInputElement).value.trim();
+    const user_latitude = (document.getElementById("input-user-latitude") as HTMLInputElement).value.trim();
+    const user_longitude = (document.getElementById("input-user-longitude") as HTMLInputElement).value.trim();
+    await apiPost("/api/settings/preferences", {
+      user_name, honorific, calendar_accounts,
+      user_location, user_latitude, user_longitude,
+    });
     await loadStatus();
   });
 

@@ -39,6 +39,10 @@ services:
       DO_NOT_TRACK: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       ANTHROPIC_LOG_LEVEL: "warning"
+      # Container clock follows host timezone — without this, datetime.now()
+      # returns UTC and the LLM hallucinates a plausible city to match the
+      # bare hour. ${TZ} reads the host's TZ env or defaults to America/Toronto.
+      TZ: "${TZ:-America/Toronto}"
       # Auth token now lives in the vault; do not set JARVIS_TOKEN_REQUIRED.
 
     # Persistent state lives on the host (audit log, memory db, token).

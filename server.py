@@ -92,6 +92,9 @@ TIME & WEATHER AWARENESS:
 - Current time: {current_time}
 - Greet accordingly: "Good morning, sir" / "Good evening, sir"
 - {weather_info}
+- NEVER invent or assume a location. If {user_name}'s location is not stated
+  above, do NOT reference a city, country, or region in your response. Say
+  "here, sir" rather than guessing a city name.
 
 CONVERSATION STYLE:
 - "Will do, sir." — acknowledging tasks
@@ -1508,14 +1511,29 @@ return windowList
             except Exception as e:
                 log.debug(f"Context thread error: {e}")
 
-            # Weather — refresh every loop (30s is fine, API is fast)
+            # Weather — refresh every loop (30s is fine, API is fast).
+            # Coordinates + label read from vault keys USER_LATITUDE, USER_LONGITUDE,
+            # USER_LOCATION. If unset, weather lookup is SKIPPED — better silent than
+            # hallucinating "St. Petersburg" because Florida coordinates were the
+            # historical default.
             try:
-                import urllib.request, json as _json
-                url = "https://api.open-meteo.com/v1/forecast?latitude=27.77&longitude=-82.64&current=temperature_2m,weathercode&temperature_unit=fahrenheit"
-                with urllib.request.urlopen(url, timeout=3) as resp:
-                    d = _json.loads(resp.read()).get("current", {})
-                    temp = d.get("temperature_2m", "?")
-                    _ctx_cache["weather"] = f"Current weather in St. Petersburg, FL: {temp}°F"
+                lat = _vault_get("USER_LATITUDE", "")
+                lon = _vault_get("USER_LONGITUDE", "")
+                label = _vault_get("USER_LOCATION", "")
+                if lat and lon and label:
+                    import urllib.request, json as _json
+                    url = (
+                        f"https://api.open-meteo.com/v1/forecast"
+                        f"?latitude={lat}&longitude={lon}"
+                        f"&current=temperature_2m,weathercode"
+                        f"&temperature_unit=fahrenheit"
+                    )
+                    with urllib.request.urlopen(url, timeout=3) as resp:
+                        d = _json.loads(resp.read()).get("current", {})
+                        temp = d.get("temperature_2m", "?")
+                        _ctx_cache["weather"] = f"Current weather in {label}: {temp}°F"
+                else:
+                    _ctx_cache["weather"] = "Location not configured."
             except Exception:
                 pass
 
@@ -2773,6 +2791,9 @@ class PreferencesUpdate(BaseModel):
     user_name: str = ""
     honorific: str = "sir"
     calendar_accounts: str = "auto"
+    user_location: str = ""
+    user_latitude: str = ""
+    user_longitude: str = ""
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
@@ -2780,6 +2801,7 @@ async def api_settings_keys(body: KeyUpdate):
                "TTS_PROVIDER", "TTS_VOICE",
                "STT_PROVIDER", "SIDECAR_URL",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
+               "USER_LATITUDE", "USER_LONGITUDE", "USER_LOCATION",
                "GITHUB_TOKEN"}
     if body.key_name not in allowed:
         raise HTTPException(status_code=400, detail="key not allowed")
@@ -2907,6 +2929,9 @@ async def api_get_preferences():
         "tts_voice": vault_dict.get("TTS_VOICE", ""),
         "stt_provider": vault_dict.get("STT_PROVIDER", "web_speech"),
         "github_token_set": bool(vault_dict.get("GITHUB_TOKEN", "").strip()),
+        "user_location": vault_dict.get("USER_LOCATION", ""),
+        "user_latitude": vault_dict.get("USER_LATITUDE", ""),
+        "user_longitude": vault_dict.get("USER_LONGITUDE", ""),
     }
 
 @app.post("/api/settings/preferences")
@@ -2917,6 +2942,9 @@ async def api_save_preferences(body: PreferencesUpdate):
     sess.settings.set("USER_NAME", body.user_name)
     sess.settings.set("HONORIFIC", body.honorific)
     sess.settings.set("CALENDAR_ACCOUNTS", body.calendar_accounts)
+    sess.settings.set("USER_LOCATION", body.user_location)
+    sess.settings.set("USER_LATITUDE", body.user_latitude)
+    sess.settings.set("USER_LONGITUDE", body.user_longitude)
     return {"success": True}
 
 # ---------------------------------------------------------------------------
