@@ -212,6 +212,30 @@ async def test_synthesize_speech_sidecar_uses_piper_engine(isolated_vault, monke
 
 
 @pytest.mark.anyio
+async def test_synthesize_speech_invalid_piper_voice_falls_back_to_default(isolated_vault, monkeypatch):
+    """A misconfigured TTS_PIPER_VOICE (friendly name with spaces) must not
+    reach the sidecar (which 400s on it) — server falls back to the default
+    voice-id so JARVIS isn't silenced."""
+    import server, sidecar_client
+    isolated_vault.bootstrap("pp")
+    isolated_vault.unlock("pp")
+    sess = isolated_vault.session()
+    sess.settings.set("TTS_PROVIDER", "sidecar")
+    sess.settings.set("TTS_ENGINE", "piper")
+    sess.settings.set("TTS_PIPER_VOICE", "Daniel (English (UK))")
+
+    captured = {}
+    async def fake_tts(text, voice="Alex", engine="say"):
+        captured["voice"] = voice
+        return b"WAV"
+    monkeypatch.setattr(sidecar_client, "tts_via_sidecar", fake_tts)
+
+    audio = await server.synthesize_speech("hello")
+    assert audio == b"WAV"
+    assert captured["voice"] == "en_GB-alan-medium"
+
+
+@pytest.mark.anyio
 async def test_synthesize_speech_auto_falls_through_to_sidecar(isolated_vault, monkeypatch):
     """TTS_PROVIDER=auto on a host where local say is NOT available should
     try the sidecar before falling back to Fish."""

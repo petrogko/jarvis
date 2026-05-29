@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -1241,7 +1242,14 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
     # Sidecar path (Docker host with the host-sidecar daemon running).
     if provider in ("auto", "sidecar"):
         engine = (_vault_get("TTS_ENGINE", "say") or "say").strip().lower()
-        piper_voice = _vault_get("TTS_PIPER_VOICE", "en_GB-alan-medium") or "en_GB-alan-medium"
+        piper_voice = (_vault_get("TTS_PIPER_VOICE", "en_GB-alan-medium") or "en_GB-alan-medium").strip()
+        # Piper voices are IDs like "en_GB-alan-medium", not friendly names.
+        # The sidecar enforces ^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$ and 400s on a
+        # bad value; fall back to the default so a misconfigured field can't
+        # silence JARVIS.
+        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$", piper_voice):
+            log.warning("TTS_PIPER_VOICE %r is not a valid piper voice id; using default", piper_voice)
+            piper_voice = "en_GB-alan-medium"
         sidecar_voice = piper_voice if engine == "piper" else voice
         audio = await sidecar_client.tts_via_sidecar(text, voice=sidecar_voice, engine=engine)
         if audio is not None:
