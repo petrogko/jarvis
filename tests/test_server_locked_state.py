@@ -177,12 +177,62 @@ async def test_synthesize_speech_uses_sidecar_when_configured(isolated_vault, mo
     sess = isolated_vault.session()
     sess.settings.set("TTS_PROVIDER", "sidecar")
 
-    async def fake_tts(text, voice="Alex"):
+    async def fake_tts(text, voice="Alex", engine="say"):
         return b"SIDECAR-AUDIO"
     monkeypatch.setattr(sidecar_client, "tts_via_sidecar", fake_tts)
 
     audio = await server.synthesize_speech("hello")
     assert audio == b"SIDECAR-AUDIO"
+
+
+@pytest.mark.anyio
+async def test_synthesize_speech_sidecar_uses_piper_engine(isolated_vault, monkeypatch):
+    """TTS_PROVIDER=sidecar + TTS_ENGINE=piper passes engine=piper + the piper
+    voice (not TTS_VOICE) to the sidecar."""
+    import server, sidecar_client
+    isolated_vault.bootstrap("pp")
+    isolated_vault.unlock("pp")
+    sess = isolated_vault.session()
+    sess.settings.set("TTS_PROVIDER", "sidecar")
+    sess.settings.set("TTS_ENGINE", "piper")
+    sess.settings.set("TTS_PIPER_VOICE", "en_GB-alan-medium")
+    sess.settings.set("TTS_VOICE", "Alex")
+
+    captured = {}
+    async def fake_tts(text, voice="Alex", engine="say"):
+        captured["voice"] = voice
+        captured["engine"] = engine
+        return b"WAV"
+    monkeypatch.setattr(sidecar_client, "tts_via_sidecar", fake_tts)
+
+    audio = await server.synthesize_speech("hello")
+    assert audio == b"WAV"
+    assert captured["engine"] == "piper"
+    assert captured["voice"] == "en_GB-alan-medium"
+
+
+@pytest.mark.anyio
+async def test_synthesize_speech_invalid_piper_voice_falls_back_to_default(isolated_vault, monkeypatch):
+    """A misconfigured TTS_PIPER_VOICE (friendly name with spaces) must not
+    reach the sidecar (which 400s on it) — server falls back to the default
+    voice-id so JARVIS isn't silenced."""
+    import server, sidecar_client
+    isolated_vault.bootstrap("pp")
+    isolated_vault.unlock("pp")
+    sess = isolated_vault.session()
+    sess.settings.set("TTS_PROVIDER", "sidecar")
+    sess.settings.set("TTS_ENGINE", "piper")
+    sess.settings.set("TTS_PIPER_VOICE", "Daniel (English (UK))")
+
+    captured = {}
+    async def fake_tts(text, voice="Alex", engine="say"):
+        captured["voice"] = voice
+        return b"WAV"
+    monkeypatch.setattr(sidecar_client, "tts_via_sidecar", fake_tts)
+
+    audio = await server.synthesize_speech("hello")
+    assert audio == b"WAV"
+    assert captured["voice"] == "en_GB-alan-medium"
 
 
 @pytest.mark.anyio
@@ -198,7 +248,7 @@ async def test_synthesize_speech_auto_falls_through_to_sidecar(isolated_vault, m
     # No FISH_API_KEY set; sidecar must be the next thing tried.
 
     monkeypatch.setattr(tts_local_cli, "is_available", lambda: False)
-    async def fake_tts(text, voice="Alex"):
+    async def fake_tts(text, voice="Alex", engine="say"):
         return b"SIDECAR-AUDIO"
     monkeypatch.setattr(sidecar_client, "tts_via_sidecar", fake_tts)
 

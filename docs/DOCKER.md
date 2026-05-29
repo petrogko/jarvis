@@ -120,7 +120,16 @@ The default JARVIS-in-Docker setup uses **Fish Audio** for TTS and **Chrome Web 
    ```bash
    ./host-sidecar/setup.sh
    ```
-   This installs `whisper-cpp` + `ffmpeg` via Homebrew, downloads the `ggml-base.en.bin` Whisper model (~150 MB), generates a shared-secret token, and loads a `launchctl` plist so the sidecar runs at login.
+   This installs `whisper-cpp` + `ffmpeg` via Homebrew, downloads the `ggml-base.en.bin` Whisper model (~150 MB), generates a shared-secret token, and loads a `launchctl` plist so the sidecar runs at login. TTS defaults to macOS `say`.
+
+   **Optional neural voice (Piper):** add `--with-piper` to also install
+   Piper (OHF-Voice/piper1-gpl, GPL-3.0) into an isolated venv plus its
+   voice models (~80 MB):
+   ```bash
+   ./host-sidecar/setup.sh --with-piper
+   ```
+   JARVIS never imports Piper — the sidecar invokes it only as a
+   subprocess. The default setup (no flag) installs no GPL code.
 
 2. Restart the JARVIS Docker container so it picks up the bind-mounted token:
    ```bash
@@ -130,6 +139,9 @@ The default JARVIS-in-Docker setup uses **Fish Audio** for TTS and **Chrome Web 
 3. In the JARVIS settings UI, set:
    - `TTS Provider` → `Sidecar (or auto)`
    - `STT Provider` → `Whisper (local host sidecar)`
+   - (if you installed `--with-piper`) `TTS_ENGINE` → `piper` to switch
+     from the macOS `say` voice to the neural Piper voice. Leave it at
+     `say` (default) otherwise.
 
 After this, voice audio and JARVIS's response text never leave the Mac.
 
