@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -1361,6 +1362,51 @@ cached_projects: list[dict] = []
 recently_built: list[dict] = []  # [{"name": str, "path": str, "time": float}]
 dispatch_registry = DispatchRegistry()
 
+
+def _dispatch_event(rec: dict) -> dict:
+    """Shape a dispatch DB record into the WS/REST event the task sidebar renders.
+
+    The URL (when a dispatch produced a running dev server) is parsed out of the
+    summary text, which is written as e.g. "Running at http://localhost:5174".
+    """
+    summary = rec.get("summary") or ""
+    url_match = re.search(r"https?://[^\s\"']+", summary)
+    return {
+        "type": "dispatch",
+        "id": rec["id"],
+        "project": rec.get("project_name", ""),
+        "status": rec.get("status", ""),
+        "summary": summary,
+        "url": url_match.group(0) if url_match else None,
+        "ts": rec.get("updated_at") or rec.get("created_at"),
+    }
+
+
+async def _broadcast_dispatch(dispatch_id: int):
+    """Fetch a dispatch record and push it to all connected clients."""
+    try:
+        rec = dispatch_registry.get_by_id(dispatch_id)
+    except Exception:
+        return  # vault locked or DB unavailable — nothing to push
+    if rec:
+        await task_manager._notify(_dispatch_event(rec))
+
+
+def _schedule_dispatch_broadcast(dispatch_id: int):
+    """Sync hook called by dispatch_registry on every register/update_status.
+
+    The registry methods are synchronous; schedule the async broadcast on the
+    running loop. If there is no running loop (e.g. unit tests), do nothing.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_broadcast_dispatch(dispatch_id))
+
+
+dispatch_registry.on_change = _schedule_dispatch_broadcast
+
 # Usage tracking — logs every call with timestamp, persists to disk
 _USAGE_FILE = Path(__file__).parent / "data" / "usage_log.jsonl"
 _session_start = time.time()
@@ -1735,6 +1781,18 @@ async def api_usage():
 async def api_list_tasks():
     tasks = await task_manager.list_tasks()
     return {"tasks": [t.to_dict() for t in tasks]}
+
+
+@app.get("/api/dispatches")
+async def api_list_dispatches():
+    """Recent project dispatches for the task sidebar (newest first). Same
+    event shape as the live `dispatch` WS messages so the frontend has one
+    renderer. Returns [] if the vault is locked / DB unavailable."""
+    try:
+        recent = dispatch_registry.get_recent(limit=10)
+    except Exception:
+        return {"dispatches": []}
+    return {"dispatches": [_dispatch_event(d) for d in recent]}
 
 
 @app.get("/api/tasks/{task_id}")

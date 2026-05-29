@@ -1,0 +1,141 @@
+/**
+ * JARVIS — Task Sidebar
+ *
+ * Left-edge panel listing project dispatches with live status pills.
+ * Mirrors the transcript panel (right edge) for visual consistency.
+ */
+
+#task-sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 320px;
+  height: 100vh;
+  padding: 68px 16px 16px 16px;
+  background: rgba(5, 5, 8, 0.82);
+  border-right: 1px solid rgba(14, 165, 233, 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+#task-sidebar.hidden {
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.task-header {
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: rgba(14, 165, 233, 0.25);
+  font-weight: 400;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+#task-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(14, 165, 233, 0.15) transparent;
+}
+
+#task-list::-webkit-scrollbar {
+  width: 6px;
+}
+#task-list::-webkit-scrollbar-thumb {
+  background: rgba(14, 165, 233, 0.15);
+  border-radius: 3px;
+}
+
+.task-empty {
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(200, 220, 240, 0.3);
+  padding: 8px 2px;
+}
+
+.task-card {
+  background: rgba(14, 165, 233, 0.04);
+  border: 1px solid rgba(14, 165, 233, 0.1);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.task-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-project {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(220, 235, 250, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-pill {
+  flex-shrink: 0;
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.task-pill.queued {
+  background: rgba(148, 163, 184, 0.15);
+  color: rgba(203, 213, 225, 0.8);
+}
+.task-pill.active {
+  background: rgba(14, 165, 233, 0.18);
+  color: rgba(56, 189, 248, 0.95);
+  animation: task-pulse 1.6s ease-in-out infinite;
+}
+.task-pill.ok {
+  background: rgba(34, 197, 94, 0.16);
+  color: rgba(74, 222, 128, 0.95);
+}
+.task-pill.err {
+  background: rgba(239, 68, 68, 0.16);
+  color: rgba(248, 113, 113, 0.95);
+}
+
+@keyframes task-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.task-summary {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(200, 220, 240, 0.55);
+  word-break: break-word;
+}
+
+.task-url {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(56, 189, 248, 0.85);
+  text-decoration: none;
+  word-break: break-all;
+}
+.task-url:hover {
+  text-decoration: underline;
+}
