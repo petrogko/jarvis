@@ -162,3 +162,35 @@ In `tests/test_conversation_deletion.py`:
 3. **Cascade into `memories`** — when a conversation is deleted (manual or via sweeper), should we also delete `memories` rows whose `source_conversation_id` matches? Default proposal: leave them, since memories are summarized abstractions, not raw content. Advisor to confirm.
 4. **Token-fingerprint format in audit** — is the first 8 chars of SHA256 sufficient (collision-tolerant for forensics, non-reversible)? Or should we use a per-restart salt to defeat rainbow-table linking across vault sessions?
 5. **Sweeper interval drift** — 5 minutes acceptable, or should we tighten to 60 s for short TTLs (e.g. 5-minute "burn after read")?
+
+---
+
+## Security-advisor review applied (2026-05-30) — GO-WITH-FIXES
+
+### Required fixes (must apply during implementation)
+1. **`pending_deletion` keyed to WS connection, not session/token** — otherwise a second tab on the same token can affirm a confirm it never saw.
+2. **Action extraction discipline** — `[ACTION:DELETE_CONVERSATION current]` must fire only on the persona's own reply turn, never on user-quoted text or tool output. Add test: persona output containing the action injected from a retrieved memory or mail body must NOT trigger pending state.
+3. **REST PATCH `ttl_seconds` cap** — REST accepts unbounded value as written; cap at 30 days server-side, parity with voice path.
+4. **Sweeper exception isolation** — wrap each per-id delete in `try/except`; on failure log `{action:"sweeper_error", reason:"<exc class>"}` with class name only. Never re-raise into the asyncio loop.
+5. **NO delete-all / vault-wipe voice verbs** — in this phase or any. Voice is a lossy channel; destructive bulk ops require typed passphrase confirmed against the vault KDF.
+6. **Resume-window race (PR #25)** — sweeper must skip conversations whose `id` matches an *active* WS session's resumed conversation. Maintain in-process `active_conversation_ids` set; sweeper SELECT must include `AND id NOT IN (...)`.
+
+### Recommended
+- Token fingerprint: per-restart salted HMAC, not raw SHA256 prefix (defeats rainbow-table linking across vault sessions).
+- Short-TTL handling: keep 300s sweeper interval, add one-shot asyncio task at `expires_at` for `ttl_seconds ≤ 600`.
+- Voice line "Gone." is good; add deleted message count to audit but NOT to the spoken response.
+
+### Advisor's answers to open questions
+1. **Delete-all voice:** NO. Footgun. Defer indefinitely.
+2. **Vault-wipe voice:** NO. Out-of-band file deletion only; document in SECURITY.md.
+3. **Cascade to `memories`:** Sealed conversations → full cascade. Ordinary deletes → null out `source_conversation_id` but keep the memory row (it's an abstraction).
+4. **Token fingerprint:** per-restart salted HMAC, not raw SHA256.
+5. **Interval:** keep 300s; add per-TTL one-shot for short windows.
+
+### DELETE response shape
+Return `{deleted_messages: n, deleted_at: <ts>}`. Do NOT return title or time range — minimizes info leak if the response is captured by downstream logs.
+
+### Drift
+- SECURITY.md: "persisted conversations are hard-deletable; no recovery"; sweeper as background-task; audit content invariant extends to deletion events.
+- ARCHITECTURE.md: sweeper as long-lived task; lock-check contract; shares conversations connection factory.
+- Membrane: SECURITY.md update is follow-up obligation.

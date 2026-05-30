@@ -207,3 +207,32 @@ Named tests for the test-runner to expect:
 - `frontend/src/lock-screen.ts` — `renderRecoveryDisplay`, copy-button removal, reveal toggle, print stylesheet.
 - `audit_log.py` — three new verbs registered.
 - `tests/test_vault_recovery.py` — new file, the 12 tests above.
+
+---
+
+## Security-advisor review applied (2026-05-30) — GO-WITH-FIXES
+
+### Required fixes (must apply during implementation)
+1. **Migration enforcement: BLOCK, not nag** — counsel-grade means a user without a recovery code is one passphrase-loss from catastrophe; "nag" reproduces the exact failure mode 1E exists to prevent. Route unlock-after-upgrade through `renderRecoveryDisplay` with a mandatory checkbox + typed acknowledgment before the token is issued. SSH-only operators: CLI subcommand to acknowledge.
+2. **AAD must bind to vault identity, not just slot label** — current `aad="wrap_passphrase"` / `"wrap_recovery"` prevents intra-vault slot swap but NOT cross-vault swap (attacker substitutes a `recovery_wrap` row from a different vault they captured). Bind AAD to a stable per-vault identifier — include `kdf.salt` bytes (or a dedicated `vault_id` random at bootstrap) in the AAD for both slots. Same applies to migration.
+3. **Print → PDF leakage** — Chrome's print dialog on macOS defaults to "Save as PDF" which writes plaintext to `~/Downloads` (often iCloud-synced). Must (a) call out in threat-model table; (b) print stylesheet shows "Do not save as PDF — print to paper" banner; (c) `beforeprint`/`afterprint` to re-mask DOM after dialog closes.
+4. **One-shot display: double-confirm required** — single checkbox too weak for an unrecoverable credential. Require checkbox + typed acknowledgment (e.g. "I have stored my recovery code" typed verbatim) before `Continue` enables. Also: if user closes tab before Continue, wrap exists but user has no code — NOT acceptable silently. Next unlock MUST detect missing-acknowledgment audit row and force rotate-recovery flow before issuing token.
+5. **Frontend in-memory zeroing** — JS strings are immutable and GC-deferred; the 24-word string can sit in the heap for minutes after `Continue`. Required: read words into a `Uint8Array` via per-word inputs, wipe via `.fill(0)` immediately after print/ack handoff. Same discipline for unlock-with-recovery input.
+
+### Recommended
+- Shoulder-surf mitigation: "show one word at a time" stepper mode option.
+- Document English BIP-39 wordlist explicitly; pin the wordlist hash in `vault.py` to detect supply-chain swap.
+- Migration: encrypted `.preupgrade.bak` deleted with `os.unlink` + best-effort overwrite; log via `vault_migration_backup_{created,deleted}`.
+- Add `test_aad_cross_vault_swap_rejected` after Required #2.
+
+### Advisor's answers to spec's open questions
+1. **Forward secrecy on rotation:** rotate K_data on `rotate-recovery` too, inside the same transaction as wrap replacement. If pysqlcipher3 can't make that atomic, defer — but document the snapshot-replay threat in SECURITY.md.
+2. **Pair rotation (passphrase change → K_recovery too):** YES. Passphrase change MUST rotate K_recovery; treating them as a pair is the only model preventing stale-credential resurrection. `change-passphrase` endpoint returns new recovery code via `renderRecoveryDisplay`.
+3. **Migration enforcement:** BLOCK. See Required #1.
+4. **Out-of-band confirmation:** Agree — no second factor in 1E. The code IS the factor.
+5. **Memory zeroing:** Disagree with spec's lean. See Required #5.
+
+### Drift
+- SECURITY.md: data-classification table — "Recovery code (BIP-39)" as **Tier 0 / catastrophic** (equal to passphrase; never persisted plaintext server-side; user-custodial offline). Update "There is no recovery" trust-model line. Document K_data indirection + dual-wrap model.
+- ARCHITECTURE.md: `vault.py` description must reflect K_data decoupling and `recovery_wrap` table; three new auth endpoints in surface map.
+- Membrane: SECURITY.md tripwire — expected and required.

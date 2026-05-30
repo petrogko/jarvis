@@ -177,3 +177,31 @@ In `tests/test_idle_auto_lock.py` (uses `isolated_vault` fixture + `monkeypatch`
 - `test_protected_http_request_updates_activity_via_middleware`
 - `test_loop_noop_when_vault_already_locked`
 - `test_lock_is_idempotent_under_concurrent_tick_and_manual_lock`
+
+---
+
+## Security-advisor review applied (2026-05-30) — GO-WITH-FIXES
+
+### Required fixes (must apply during implementation)
+1. **Activity tracking must cover binary WS frames** (audio chunks during long Aria turns), not just text. Otherwise wandered-WS misfires mid-utterance. Add `test_active_ws_binary_frames_keep_session_alive`.
+2. **Send-before-close flush race** — `send_json` then `close(4423)` doesn't guarantee the frame is sent. Treat the 4423 close code as authoritative; the JSON payload is best-effort. Document.
+3. **Persistence ordering invariant** — explicit: persist user turn → dispatch LLM → persist assistant turn. Otherwise transcript shows question with no answer instead of a clean gap.
+4. **Audit collapse: `wandered_ws` vs `idle` is a habit side-channel** — collapse to single verb `auto_lock`; replace connection-count with `had_ws: bool`; the idle/wandered split offers no forensic value the timestamp doesn't already give.
+5. **Clock-jump guard for macOS sleep** — if `idle_for > threshold + 300`, log `clock_jump` audit entry. Document: on lid-close the laptop sleeps, timer can't fire until wake; worst-case exposure is `threshold + 60 s + suspend_duration`.
+6. **`IDLE_LOCK_DISABLED` refused when sealed conversations exist** — at load time, if any conversation has `sealed=true`, force-treat as 0 and audit the override. Otherwise the flag defeats counsel-mode by design.
+
+### Recommended
+- Null `anthropic_client` on lock (cheap rebuild; removes process-memory secret).
+- `IDLE_LOCK_S` floor 120s (not 60s) when sealed conversations exist (avoids lock-thrash).
+- Single accessor `task_manager.ws_count()` instead of reaching into `_websockets`.
+
+### Advisor's answers to spec's open questions
+1. **Sealed-conversation threshold drop:** YES, mandatory, not optional. New vault key `IDLE_LOCK_S_SEALED`, default **120 s**, applied whenever any session conversation is sealed.
+2. **macOS notification:** NO in 1C. AppleScript surface widening not worth it; lock-screen on next interaction is sufficient.
+3. **Cache wipe:** YES for `anthropic_client`; NO for `cached_projects`. Add `personas`/system-prompt caches to wipe list if rendered with sealed-conversation content.
+4. **Sleep hook:** defer to Phase 2; document the wake-late behavior per Required #5.
+
+### Drift
+- SECURITY.md: auto-lock invariant; `IDLE_LOCK_DISABLED` posture warning to operator checklist.
+- ARCHITECTURE.md: new background task `idle-lock` in `lifespan()`; activity chokepoint in middleware + WS receive loop; close code 4423.
+- Membrane: none directly; `auth.py` not edited.

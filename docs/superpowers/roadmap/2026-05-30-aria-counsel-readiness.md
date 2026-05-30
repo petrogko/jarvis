@@ -94,12 +94,12 @@ This document tracks the work to upgrade Aria from "voice assistant" to "persona
 
 | # | Item | IDs closed | Spec | PR | Status |
 |---|---|---|---|---|---|
-| 1A | Local-LLM mode (Ollama) | S1, S13 | [`2026-05-30-local-llm-mode-design.md`](../specs/2026-05-30-local-llm-mode-design.md) | — | spec drafted — pending security-advisor review |
-| 1B | Conversation deletion + auto-expire | S2 | [`2026-05-30-conversation-deletion-design.md`](../specs/2026-05-30-conversation-deletion-design.md) | — | spec drafted — pending security-advisor review |
-| 1C | Idle auto-lock | S3 | [`2026-05-30-idle-auto-lock-design.md`](../specs/2026-05-30-idle-auto-lock-design.md) | — | spec drafted — pending security-advisor review |
-| 1D | Secrets-detection redactor | S4 | [`2026-05-30-secrets-redactor-design.md`](../specs/2026-05-30-secrets-redactor-design.md) | — | spec drafted — pending security-advisor review |
-| 1E | Vault BIP-39 recovery code | S5, F11 | [`2026-05-30-vault-recovery-design.md`](../specs/2026-05-30-vault-recovery-design.md) | — | spec drafted — pending security-advisor review |
-| 1F | Crisis-floor detection | S7 | [`2026-05-30-crisis-floor-design.md`](../specs/2026-05-30-crisis-floor-design.md) | — | spec drafted — pending security-advisor review |
+| 1A | Local-LLM mode (Ollama) | S1, S13 | [`2026-05-30-local-llm-mode-design.md`](../specs/2026-05-30-local-llm-mode-design.md) | — | **advisor-cleared GO-WITH-FIXES (6 required)** — ready for implementation |
+| 1B | Conversation deletion + auto-expire | S2 | [`2026-05-30-conversation-deletion-design.md`](../specs/2026-05-30-conversation-deletion-design.md) | — | **advisor-cleared GO-WITH-FIXES (6 required)** — ready for implementation |
+| 1C | Idle auto-lock | S3 | [`2026-05-30-idle-auto-lock-design.md`](../specs/2026-05-30-idle-auto-lock-design.md) | — | **advisor-cleared GO-WITH-FIXES (6 required)** — ready for implementation |
+| 1D | Secrets-detection redactor | S4 | [`2026-05-30-secrets-redactor-design.md`](../specs/2026-05-30-secrets-redactor-design.md) | — | **advisor-cleared GO-WITH-FIXES (5 required)** — ready for implementation |
+| 1E | Vault BIP-39 recovery code | S5, F11 | [`2026-05-30-vault-recovery-design.md`](../specs/2026-05-30-vault-recovery-design.md) | — | **advisor-cleared GO-WITH-FIXES (5 required)** — ready for implementation |
+| 1F | Crisis-floor detection | S7 | [`2026-05-30-crisis-floor-design.md`](../specs/2026-05-30-crisis-floor-design.md) | — | **advisor-cleared GO-WITH-FIXES (7 required)** — ready for implementation |
 
 ---
 
@@ -157,3 +157,4 @@ This document tracks the work to upgrade Aria from "voice assistant" to "persona
 
 - 2026-05-30 — Document created. Six Phase 1 specs drafted in parallel via subagents (1A, 1B, 1C, 1D, 1E, 1F).
 - 2026-05-30 — User answered Q1 (all four counsel modes), Q2 (counsel-only-local), Q3 (all four crisis categories), Q4 (BIP-39 24-word recovery). Implementation priority for Phase 1 confirmed.
+- 2026-05-30 — All six Phase-1 specs reviewed by security-advisor in parallel. All cleared **GO-WITH-FIXES**, total **35 required fixes** (1A:6, 1B:6, 1C:6, 1D:5, 1E:5, 1F:7). Required-fix logs appended to each spec. Specs are now self-contained for the implementer to read alongside required fixes.

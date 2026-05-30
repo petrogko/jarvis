@@ -348,3 +348,33 @@ ordinary conversation and break counsel work.
    should we also annotate the response visually for the user?
 5. **Vault-key default for new installs.** `on` by default. Does
    security-advisor concur, given the opt-out cost discussed above?
+
+---
+
+## Security-advisor review applied (2026-05-30) — GO-WITH-FIXES
+
+### Required fixes (must apply during implementation)
+1. **Classifier under-specified** — name training source explicitly (which counseling transcripts? license? does real distress text enter the repo?); commit trained weights + feature extractor as versioned artifact under `crisis_floor/` with fixed hash check at import; document numpy/scikit-learn as runtime deps explicitly (or hand-roll inference and say so).
+2. **False-positive target unsubstantiated** — "< 1 in 5,000 turns" on a 500-turn corpus is meaningless. Either expand corpus to ≥ 10k turns OR weaken claim to "zero FP on held-out 500-turn calibration set; FP rate in production is unmeasured." Add `test_false_positive_temporal_past` for the recovery-user case ("I used to want to die").
+3. **Negation/quote suppression too narrow** — 5-token window misses "I would never, after everything I've been through this year, want to kill myself." Change to "negation token anywhere earlier in the same sentence"; add adversarial tests for long-distance negation and double-negation ("it's not that I don't want to die").
+4. **Post-filter must be allowed to suppress, not just log** — false negatives in post-filter on Aria's output are exactly the jailbreak case the floor defends against. Gated by higher classifier threshold (≥ 0.95) and only for `overdose` / `self_harm` categories where Aria authoring has no legitimate counsel use. Log-only for `ideation` / `panic` where roleplay is plausible.
+5. **Audit-log retention policy** — add SECURITY.md `crisis_floor` section: (a) Tier 2 entries aggregated daily (count per category, no per-event row) OR disabled by default; (b) Tier 1 entries auto-expire after 30 days; (c) `jarvis crisis-floor purge` CLI subcommand to wipe these specific rows without touching the rest of the audit. The user must be able to forget a crisis moment.
+6. **i18n hotline** — `RESPONSE_TEMPLATES` keyed by `(category, locale)`; locale read from vault (`CRISIS_FLOOR_LOCALE`, default `us`); ship `us`, `gb`, `intl` (Befrienders Worldwide) at minimum. Hard-coding 988 for a tool the user may take abroad is foreseeable harm.
+7. **TTS voice for floor response** — warm flirtatious Cori delivering "988 lifeline is there" is tonally wrong and arguably manipulative. Pick one: (a) distinct neutral TTS voice for floor turns, (b) earcon + voice-tone shift prompt, or (c) text-only display with TTS suppressed. Document the choice. This is UX-as-safety, not cosmetic.
+
+### Recommended — additional structural
+- **Spoofing defense:** `crisis_floor.scan` takes a typed `UserTurn` object, not raw string, so `untrusted_content`-wrapped mail/calendar payloads cannot reach it accidentally.
+- Tier 2 audit entries default OFF or aggregate-only — flagging *suspicion* of distress on indirect phrases with no user-visible response is arguably worse than Tier 1 logging.
+- One-line note in Aria's persona that the Tier 2 flag is system-injected and not a user instruction.
+
+### Advisor's answers to spec's open questions
+1. **Sensuality suppression after Tier 1:** YES, suppress for remainder of session (not N turns — session boundary cleaner). Tonal whiplash is real harm; user can `/reset` or `CRISIS_FLOOR_MODE=tier2_only` if they want roleplay back.
+2. **"Are you safe right now?" follow-up:** NO. Drifts clinical. The "stay" line ("I'm here if you want to keep talking") already invites disclosure.
+3. **Banter suppression window:** session-scoped, not turn-counted (same as #1).
+4. **Post-filter:** partial edit authority on `overdose` / `self_harm` categories only — see Required #4.
+5. **Default `on`:** concur, with i18n + TTS fixes (without those, default-on is worse than default-off for non-US users).
+
+### Drift
+- SECURITY.md: new "Safety floor" section — deterministic pre-LLM filter on user input only; audit semantics; opt-out semantics; explicit "NOT content moderation, NOT clinical tool."
+- ARCHITECTURE.md: new `crisis_floor.py` in trust-boundary diagram, between WS-input sanitization and `generate_response`, parallel to `untrusted_content`.
+- Membrane: Aria persona prompt amended (small Tier 2 addendum) — flag for `code-reviewer`.

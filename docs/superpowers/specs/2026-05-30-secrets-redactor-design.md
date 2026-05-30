@@ -138,3 +138,33 @@ Hermetic, under `tests/test_secrets_redactor.py`:
 - Per-conversation user-tunable category toggles (vault-global only in v1).
 - Redacting Aria's spoken/displayed output to the user (out of scope — see §2).
 - A "redaction trail" replay tool. Deferred until §12.2 is answered.
+
+---
+
+## Security-advisor review applied (2026-05-30) — GO-WITH-FIXES
+
+### Required fixes (must apply during implementation)
+1. **Ordering on assistant reply:** `extract_action` runs BEFORE redact, not after. Otherwise a model output containing both an action and a hex blob risks the regex eating action bytes.
+2. **WARN-mode raw-secret exposure window unacceptable as written** — raw secret stays in `history` pending confirmation; the next turn ships it to Anthropic verbatim, and any crash/reconnect can flush it to persistence. Fix: redact-in-history immediately; hold raw only in a short-lived `pending_unredactions[conversation_id] = (raw, detection)` map with hard TTL (60 s) and single-use semantics. "Hold raw in history" is the threat path, not the safe path.
+3. **`[REDACTED:category]` inferential leak on resume** — current turn keeps the category (Aria needs context to reason); on resume (`load_recent_messages`), collapse all `[REDACTED:*]` to neutral `[REDACTED]` and group consecutive ones into `[earlier sensitive content omitted]`. Four-SSN aggregation is a real counsel-grade concern.
+4. **Audit-log invariant extends to exception paths** — wrap the redactor in `try/except`; log `verb=secret_detector_error category=<cat> exc_type=<type>` with NO message and NO traceback. A stack trace from a buggy regex can carry the input string. Add `test_audit_log_never_contains_matched_bytes_on_exception`.
+5. **Spoken-password regex too narrow** — missing "the password is X", "use X as the password/passcode/PIN", "type X" / "enter X", "passcode is", "PIN colon". Extend trigger alternation: `(?:my |the |our )?(?:password|passcode|passphrase|pin)\s+(?:is|:|colon)` plus `(?:use|type|enter)\s+(\S+)\s+(?:as\s+(?:the\s+)?(?:password|passcode|pin))`.
+
+### Recommended — additional categories
+JWT (`eyJ...eyJ...`), PEM blocks (`-----BEGIN [A-Z ]+-----`), OpenSSH private keys (`-----BEGIN OPENSSH PRIVATE KEY-----`), spoken `ssh-rsa` keys, bcrypt (`\$2[aby]\$...`), IBAN (mod-97 validator), Stripe modern keys (`rk_live_`, `whsec_`), Slack (`xoxe-`). PEM/JWT are highest-value for counsel-mode.
+
+### Recommended — engineering
+- Pre-compile + cache patterns as module-level `_PATTERNS: dict[str, re.Pattern]`.
+- Performance acceptance criterion: `p95` over 1000 iterations (not single-shot — too noisy on M-series). Plus 4-KiB adversarial input (`"9" * 4096`) to prove card regex doesn't catastrophic-backtrack.
+- Hard input-length cap (4 KiB) + per-call wall-clock guard on the assistant-reply path.
+
+### Advisor's answers to spec's open questions
+1. **§12.1 Resume redaction:** Both. One-shot migration over existing store (idempotent, gated on `SECRETS_MIGRATION_DONE` vault flag) AND permanent post-load filter as belt-and-braces.
+2. **§12.2 Counter UI:** Counter-only is fine. Show aggregate counts per category over rolling 7-day window; never per-conversation, never timestamps fine enough to correlate with a specific turn.
+3. **§12.3 `[REDACTED:*]` on resume:** YES, strip. See Required #3.
+4. **§12.4 STRICT acknowledgment:** Audit log is durable record. Surface end-of-session toast only on user request via dedicated `[ACTION:SHOW_REDACTION_COUNT]`. Don't volunteer mid-conversation.
+
+### Drift
+- SECURITY.md: new "Data-handling: secrets redaction" subsection — categories, two modes, audit-log invariant, "what the LLM saw == what we persisted" invariant.
+- ARCHITECTURE.md: new `secrets_redactor.py` module; redactor sits between STT/LLM-out and both persistence + LLM-in.
+- Membrane: SECURITY.md tripwire will fire — expected.

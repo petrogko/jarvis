@@ -218,3 +218,36 @@ All tests run without network: Ollama and Anthropic clients are injected as fake
 5. Per-token rate cap is 30/min. Is that the right number against a single human user, or should we lower it (e.g., 10/min) to bound runaway agent loops more tightly?
 6. The six non-user-turn Anthropic call sites (summary, memory extraction, etc.) are NOT routed in v1. Is that acceptable for the counsel threat model, or does S1 require routing all six before counsel-readiness is claimed?
 7. Should sealed-conversation telemetry (count, duration) be emitted to the audit log at all? Even metadata-only might be too much.
+
+---
+
+## Security-advisor review applied (2026-05-30) — GO-WITH-FIXES
+
+### Required fixes (must apply during implementation)
+1. **Structurally enforce sealed-never-falls-back** — current spec relies on the router. Add a defense-in-depth `assert not conversation.sealed` inside the Anthropic call path immediately before `anthropic_client.messages.create`, so a future router bug cannot leak sealed content.
+2. **DB-layer set-once for `sealed`** — add a SQLite `BEFORE UPDATE` trigger: `WHEN OLD.sealed = 1 AND NEW.sealed = 0 RAISE(ABORT)`. App-level check alone is bypassable.
+3. **Hybrid silent-fallback must notify in-band** — Aria prepends a one-clause acknowledgment on the first fallback turn per session ("Anthropic unreachable; answering locally, sir."). Audit log + UI badge alone insufficient for a voice-first product.
+4. **Ollama loopback enforced at sidecar startup, not per-request** — sidecar refuses to start if Ollama is bound non-loopback; fail-closed.
+5. **Audit-log canary tests strengthened** — single fixed canary is theater. Tests must (a) embed canary at start, middle, end of user content; (b) embed canary in system prompt; (c) trigger fallback and re-check.
+6. **Transitivity gap on unrouted call sites (§10 footer)** — rolling-summary and memory-extraction touch material from sealed conversations. For v1, either route those through local for sealed-source content OR refuse to summarize/extract from sealed conversations. **NOT acceptable as written.**
+
+### Recommended
+- Per-token max-in-flight cap (e.g., 2) alongside the 30/min rate cap.
+- Surface `truncated=true` to JARVIS, don't swallow silently.
+- Add action-tag-fidelity test against the chosen local model (CI-skip-by-default).
+- Sidecar startup `curl 127.0.0.1:11434/api/tags` once and log model availability.
+- Strip `[ACTION:X]` parsing entirely from sealed-conversation responses — counsel turns shouldn't dispatch browser/build actions; shrinks injection-to-action surface.
+
+### Advisor's answers to §12 open questions
+1. **Default mode when Ollama enabled:** stay opt-in (`anthropic` default).
+2. **Sealed-by-mistake recovery:** no recovery; the guarantee is the product.
+3. **`HYBRID_FALLBACK_OK` flag:** YES, require it.
+4. **Sidecar startup on non-loopback Ollama:** refuse to start (Required #4).
+5. **Rate cap:** lower 30/min → **10/min/token**.
+6. **Unrouted Anthropic call sites:** NOT acceptable for sealed. See Required #6.
+7. **Sealed-conversation telemetry:** metadata-only acceptable; conversation_id must be hashed or omitted.
+
+### Drift
+- SECURITY.md: new egress destination (Ollama on host), new vault keys, sealed invariant, system-prompt-echo limitation.
+- ARCHITECTURE.md: new `llm_router.py`, new sidecar route, new trust-boundary line (container → sidecar → Ollama loopback).
+- Membrane: none directly; `llm_router.py` becomes new high-trust module — add to CLAUDE.md persona routing as security-advisor-gated.
