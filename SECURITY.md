@@ -55,6 +55,27 @@ Fish Audio was the only TTS path pre-wave-1. As of `openclaw_ports/tts_local_cli
 
 By default, Chrome Web Speech sends audio to Google. When `STT_PROVIDER=whisper`, voice audio is POSTed to `/api/stt` on the JARVIS server and forwarded to the host sidecar, which runs `whisper-cli` locally. Voice audio never leaves the local machine. This replaces the Chrome Web Speech ↔ Google path entirely.
 
+## Idle auto-lock
+
+Phase-1 hardening per `docs/superpowers/specs/2026-05-30-idle-auto-lock-design.md`. A background asyncio task in `lifespan()` polls activity every 60 s and re-locks the vault (plus disconnects all WS clients with close code 4423) after `IDLE_LOCK_S` (vault key, default 900 s / 15 min) of inactivity.
+
+**Activity chokepoints** — every one of these calls `_idle_lock_manager.touch()`:
+- `vault.unlock` on successful unlock (initial activity).
+- Vault-locked HTTP middleware on every protected request that passes auth.
+- WS receive loop on every received frame.
+
+**Lock semantics:**
+- `IDLE_LOCK_S` is clamped to `[60, 86400]` regardless of vault value.
+- Pure idle (no WS connected): threshold is `IDLE_LOCK_S`.
+- Wandered-WS (connection present but no inbound activity): threshold is `2 × IDLE_LOCK_S` — connected client doesn't get a free pass forever.
+- `IDLE_LOCK_DISABLED=1` is **refused when any sealed conversation exists** (sealed-mode is the whole point of opt-out being unavailable; effective once PR for 1A lands). When sealed conversations exist, the threshold drops to `IDLE_LOCK_S_SEALED` (default 120 s).
+- WS close code **4423 is authoritative**. The `{"type":"vault_locked"}` JSON broadcast is best-effort (send-before-close has a flush race); clients MUST treat 4423 as the signal regardless.
+- On lock, `anthropic_client` is set to `None` so the in-memory API key is cleared. It's rebuilt on next unlock.
+
+**Audit log** — single verb `auto_lock`. Single behavioral classifier `had_ws: bool`. Optional `clock_jump: true` when `idle_for > IDLE_LOCK_S + 300` (macOS sleep / lid-close detection — the timer can't fire while suspended, so it fires late on wake). The `idle` vs `wandered_ws` distinction is intentionally NOT recorded — it was a habit side-channel that revealed user-presence patterns over time.
+
+**Known limitation:** while the macOS host is suspended, the container's event loop is too — the timer cannot fire until wake. Worst-case exposure window is `IDLE_LOCK_S + 60 s + suspend_duration`. The `clock_jump` audit line surfaces the gap to an operator reviewing the log.
+
 ## Trust boundaries
 
 | Boundary | Transport | Auth |
