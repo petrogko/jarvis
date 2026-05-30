@@ -26,9 +26,13 @@ _HEADER_NAME: Final[str] = "X-SIDECAR-Token"
 
 
 def _read_token() -> str:
+    # OSError covers FileNotFoundError AND IsADirectoryError — the latter
+    # happens when the sidecar isn't installed on the host, so Docker
+    # auto-creates the bind-mount target as an empty directory. Treat any
+    # unreadable token as "no sidecar" and degrade gracefully.
     try:
         return _TOKEN_PATH.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
+    except OSError:
         return ""
 
 
@@ -42,7 +46,7 @@ def _base_url() -> str:
         return "http://host.docker.internal:9999"
 
 
-async def tts_via_sidecar(text: str, voice: str = "Alex") -> bytes | None:
+async def tts_via_sidecar(text: str, voice: str = "Alex", engine: str = "say") -> bytes | None:
     """POST /tts. Returns audio bytes on 200; None on any failure."""
     token = _read_token()
     if not token:
@@ -54,7 +58,7 @@ async def tts_via_sidecar(text: str, voice: str = "Alex") -> bytes | None:
             r = await http.post(
                 url,
                 headers={_HEADER_NAME: token},
-                json={"text": text, "voice": voice},
+                json={"text": text, "voice": voice, "engine": engine},
             )
         if r.status_code != 200:
             log.warning("sidecar /tts returned %s", r.status_code)

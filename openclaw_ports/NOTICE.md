@@ -13,6 +13,7 @@ Modules in this directory are ported from OpenClaw
 |--------------------|------------------------------------------------------------|--------------------------------------------|-------------|
 | `tts_local_cli.py` | `extensions/tts-local-cli/speech-provider.ts`              | `125d82cab2952f87f532106a368d54e526141026` | 2026-05-25  |
 | `gh_issues.py`     | `skills/gh-issues/SKILL.md`                                | `125d82cab2952f87f532106a368d54e526141026` | 2026-05-25  |
+| `web_search.py`    | `extensions/tavily/src/tavily-client.ts` (search slice)    | `125d82cab2952f87f532106a368d54e526141026` | 2026-05-29  |
 
 ## Resync workflow
 
