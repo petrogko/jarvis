@@ -32,6 +32,11 @@ interface PreferencesResponse {
   calendar_accounts: string;
   tts_provider: string;
   tts_voice: string;
+  stt_provider?: string;  // "web_speech" | "whisper"
+  github_token_set?: boolean;
+  user_location?: string;
+  user_latitude?: string;
+  user_longitude?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,10 +111,30 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field">
+            <label>GitHub Token</label>
+            <div class="settings-input-row">
+              <input type="password" id="input-github-token" placeholder="ghp_... or github_pat_..." />
+              <button class="settings-btn" id="btn-save-github-token">Save</button>
+              <span class="status-dot" id="status-github-token"></span>
+            </div>
+          </div>
+
+          <div class="settings-field">
             <label>Fish Voice ID</label>
             <div class="settings-input-row">
               <input type="text" id="input-fish-voice-id" placeholder="612b878b113047d9a770c069c8b4fdfe" />
               <button class="settings-btn" id="btn-save-voice-id">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>STT Provider</label>
+            <div class="settings-input-row">
+              <select id="input-stt-provider">
+                <option value="web_speech">Web Speech (browser → Google)</option>
+                <option value="whisper">Whisper (local host sidecar)</option>
+              </select>
+              <button class="settings-btn" id="btn-save-stt-provider">Save</button>
             </div>
           </div>
 
@@ -173,6 +198,21 @@ function buildPanelHTML(): string {
           <div class="settings-field">
             <label>Calendar Accounts</label>
             <textarea id="input-calendar-accounts" rows="2" placeholder="auto (or comma-separated emails)"></textarea>
+          </div>
+
+          <div class="settings-field">
+            <label>Location (city/region label JARVIS will say)</label>
+            <input type="text" id="input-user-location" placeholder="Toronto" />
+          </div>
+
+          <div class="settings-field">
+            <label>Latitude (decimal, e.g. 43.6532)</label>
+            <input type="text" id="input-user-latitude" placeholder="43.6532" />
+          </div>
+
+          <div class="settings-field">
+            <label>Longitude (decimal, e.g. -79.3832)</label>
+            <input type="text" id="input-user-longitude" placeholder="-79.3832" />
           </div>
 
           <div class="settings-actions">
@@ -271,16 +311,26 @@ async function loadPreferences() {
     const calEl = document.getElementById("input-calendar-accounts") as HTMLTextAreaElement;
     const ttsProviderEl = document.getElementById("input-tts-provider") as HTMLSelectElement;
     const ttsVoiceEl = document.getElementById("input-tts-voice") as HTMLSelectElement;
+    const sttProviderEl = document.getElementById("input-stt-provider") as HTMLSelectElement;
+    const locEl = document.getElementById("input-user-location") as HTMLInputElement;
+    const latEl = document.getElementById("input-user-latitude") as HTMLInputElement;
+    const lonEl = document.getElementById("input-user-longitude") as HTMLInputElement;
     if (nameEl) nameEl.value = prefs.user_name || "";
     if (honEl) honEl.value = prefs.honorific || "sir";
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
     if (ttsProviderEl) ttsProviderEl.value = prefs.tts_provider || "auto";
+    if (sttProviderEl) sttProviderEl.value = prefs.stt_provider || "web_speech";
+    if (locEl) locEl.value = prefs.user_location || "";
+    if (latEl) latEl.value = prefs.user_latitude || "";
+    if (lonEl) lonEl.value = prefs.user_longitude || "";
     if (ttsVoiceEl) {
       populateVoiceOptions(ttsVoiceEl, prefs.tts_voice || "");
     }
     // Hydrate localStorage so speakViaBrowser picks up the user's choice
     // without re-fetching settings on every utterance.
     setPreferredVoice(prefs.tts_voice || "");
+    // GitHub token saved indicator
+    setDotStatus("status-github-token", prefs.github_token_set ? "green" : "red");
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
   }
@@ -332,6 +382,12 @@ function wireEvents() {
     }
   });
 
+  // Save STT provider
+  document.getElementById("btn-save-stt-provider")?.addEventListener("click", async () => {
+    const value = (document.getElementById("input-stt-provider") as HTMLSelectElement).value;
+    await apiPost("/api/settings/keys", { key_name: "STT_PROVIDER", key_value: value });
+  });
+
   // Save TTS provider
   document.getElementById("btn-save-tts-provider")?.addEventListener("click", async () => {
     const provider = (document.getElementById("input-tts-provider") as HTMLSelectElement).value;
@@ -345,6 +401,15 @@ function wireEvents() {
     // Mirror to localStorage so the browser-TTS fallback picks it up on
     // the next utterance without a settings round-trip.
     setPreferredVoice(voice);
+  });
+
+  // Save GitHub Token
+  document.getElementById("btn-save-github-token")?.addEventListener("click", async () => {
+    const ghToken = (document.getElementById("input-github-token") as HTMLInputElement).value.trim();
+    if (ghToken) {
+      await apiPost("/api/settings/keys", { key_name: "GITHUB_TOKEN", key_value: ghToken });
+      setDotStatus("status-github-token", "green");
+    }
   });
 
   // Test Anthropic
@@ -376,7 +441,13 @@ function wireEvents() {
     const user_name = (document.getElementById("input-user-name") as HTMLInputElement).value.trim();
     const honorific = (document.getElementById("input-honorific") as HTMLSelectElement).value;
     const calendar_accounts = (document.getElementById("input-calendar-accounts") as HTMLTextAreaElement).value.trim();
-    await apiPost("/api/settings/preferences", { user_name, honorific, calendar_accounts });
+    const user_location = (document.getElementById("input-user-location") as HTMLInputElement).value.trim();
+    const user_latitude = (document.getElementById("input-user-latitude") as HTMLInputElement).value.trim();
+    const user_longitude = (document.getElementById("input-user-longitude") as HTMLInputElement).value.trim();
+    await apiPost("/api/settings/preferences", {
+      user_name, honorific, calendar_accounts,
+      user_location, user_latitude, user_longitude,
+    });
     await loadStatus();
   });
 

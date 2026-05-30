@@ -34,7 +34,7 @@ from typing import Optional
 
 import anthropic
 import httpx
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -92,6 +92,9 @@ TIME & WEATHER AWARENESS:
 - Current time: {current_time}
 - Greet accordingly: "Good morning, sir" / "Good evening, sir"
 - {weather_info}
+- NEVER invent or assume a location. If {user_name}'s location is not stated
+  above, do NOT reference a city, country, or region in your response. Say
+  "here, sir" rather than guessing a city name.
 
 CONVERSATION STYLE:
 - "Will do, sir." — acknowledging tasks
@@ -230,6 +233,8 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
 - [ACTION:CREATE_NOTE] title ||| body — create a new Apple Note. For saving plans, ideas, lists.
   "save that as a note" → [ACTION:CREATE_NOTE] Day Plan March 19 ||| Morning: client calls. Afternoon: TikTok dashboard. Evening: JARVIS improvements.
 - [ACTION:READ_NOTE] title search — read an existing Apple Note by title keyword.
+- [ACTION:GH_ISSUES_LIST owner/repo] — list open GitHub issues on a repo (e.g. petrogko/jarvis)
+- [ACTION:GH_ISSUE_CREATE owner/repo|title|body] — open a new GitHub issue
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
 
@@ -864,7 +869,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     caller behaves as if no action was emitted.
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|GH_ISSUES_LIST|GH_ISSUE_CREATE)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if not match:
@@ -1207,19 +1212,20 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
     """Generate speech audio from text.
 
     Provider chosen by vault key `TTS_PROVIDER`:
-      - "auto" (default): try macOS `say` via openclaw_ports.tts_local_cli;
-        fall back to Fish Audio if local TTS is unavailable or fails.
-      - "local_cli":      use only macOS `say`; return None on failure.
-      - "fish_audio":     skip local; go straight to Fish Audio.
+      - "auto": try local `say` (host-only) → sidecar (Docker) → Fish (cloud)
+      - "local_cli": local say only; None on failure
+      - "sidecar": sidecar only; None on failure
+      - "fish_audio": Fish only
     """
     from openclaw_ports import tts_local_cli
+    import sidecar_client
 
     provider = (_vault_get("TTS_PROVIDER", "auto") or "auto").strip().lower()
+    voice = _vault_get("TTS_VOICE", "Alex") or "Alex"
 
-    # Local CLI path.
+    # Local CLI path (only viable on macOS host install).
     if provider in ("auto", "local_cli") and tts_local_cli.is_available():
         try:
-            voice = _vault_get("TTS_VOICE", "Alex") or "Alex"
             audio = await tts_local_cli.synthesize(text, voice=voice)
             _session_tokens["tts_calls"] += 1
             _append_usage_entry(0, 0, "tts")
@@ -1228,38 +1234,40 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
             log.warning("local TTS failed: %s", e)
             if provider == "local_cli":
                 return None
-            # auto: fall through to Fish Audio.
     elif provider == "local_cli":
         log.warning("TTS_PROVIDER=local_cli but local TTS unavailable; no audio")
         return None
 
-    # Fish Audio path (unchanged behavior).
+    # Sidecar path (Docker host with the host-sidecar daemon running).
+    if provider in ("auto", "sidecar"):
+        audio = await sidecar_client.tts_via_sidecar(text, voice=voice)
+        if audio is not None:
+            _session_tokens["tts_calls"] += 1
+            _append_usage_entry(0, 0, "tts")
+            return audio
+        if provider == "sidecar":
+            return None
+        # auto: fall through to Fish.
+
+    # Fish Audio path (existing, unchanged).
     fish_api_key = _vault_get("FISH_API_KEY")
     fish_voice_id = _vault_get("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")
     if not fish_api_key:
         log.warning("FISH_API_KEY not set, skipping TTS")
         return None
-
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
             response = await http.post(
                 FISH_API_URL,
-                headers={
-                    "Authorization": f"Bearer {fish_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "reference_id": fish_voice_id,
-                    "format": "mp3",
-                },
+                headers={"Authorization": f"Bearer {fish_api_key}", "Content-Type": "application/json"},
+                json={"text": text, "reference_id": fish_voice_id, "format": "mp3"},
             )
-            if response.status_code == 200:
-                _session_tokens["tts_calls"] += 1
-                _append_usage_entry(0, 0, "tts")
-                return response.content
-            log.error(f"TTS error: {response.status_code}")
-            return None
+        if response.status_code == 200:
+            _session_tokens["tts_calls"] += 1
+            _append_usage_entry(0, 0, "tts")
+            return response.content
+        log.error(f"TTS error: {response.status_code}")
+        return None
     except Exception as e:
         log.error(f"TTS error: {e}")
         return None
@@ -1503,14 +1511,29 @@ return windowList
             except Exception as e:
                 log.debug(f"Context thread error: {e}")
 
-            # Weather — refresh every loop (30s is fine, API is fast)
+            # Weather — refresh every loop (30s is fine, API is fast).
+            # Coordinates + label read from vault keys USER_LATITUDE, USER_LONGITUDE,
+            # USER_LOCATION. If unset, weather lookup is SKIPPED — better silent than
+            # hallucinating "St. Petersburg" because Florida coordinates were the
+            # historical default.
             try:
-                import urllib.request, json as _json
-                url = "https://api.open-meteo.com/v1/forecast?latitude=27.77&longitude=-82.64&current=temperature_2m,weathercode&temperature_unit=fahrenheit"
-                with urllib.request.urlopen(url, timeout=3) as resp:
-                    d = _json.loads(resp.read()).get("current", {})
-                    temp = d.get("temperature_2m", "?")
-                    _ctx_cache["weather"] = f"Current weather in St. Petersburg, FL: {temp}°F"
+                lat = _vault_get("USER_LATITUDE", "")
+                lon = _vault_get("USER_LONGITUDE", "")
+                label = _vault_get("USER_LOCATION", "")
+                if lat and lon and label:
+                    import urllib.request, json as _json
+                    url = (
+                        f"https://api.open-meteo.com/v1/forecast"
+                        f"?latitude={lat}&longitude={lon}"
+                        f"&current=temperature_2m,weathercode"
+                        f"&temperature_unit=fahrenheit"
+                    )
+                    with urllib.request.urlopen(url, timeout=3) as resp:
+                        d = _json.loads(resp.read()).get("current", {})
+                        temp = d.get("temperature_2m", "?")
+                        _ctx_cache["weather"] = f"Current weather in {label}: {temp}°F"
+                else:
+                    _ctx_cache["weather"] = "Location not configured."
             except Exception:
                 pass
 
@@ -2635,6 +2658,57 @@ async def voice_handler(ws: WebSocket):
                                             except Exception:
                                                 pass
                                     asyncio.create_task(_read_and_report(embedded_action["target"].strip(), ws))
+                                elif embedded_action["action"] == "gh_issues_list":
+                                    owner_repo = embedded_action["target"].strip()
+                                    if not owner_repo:
+                                        response_text = "I need a repository name, sir. Something like owner/repo."
+                                    else:
+                                        from openclaw_ports import gh_issues as _gh_issues
+                                        _gh_token = _vault_get("GITHUB_TOKEN")
+                                        async def _do_gh_issues_list(
+                                            _or=owner_repo, _tok=_gh_token
+                                        ) -> str:
+                                            try:
+                                                issues = await _gh_issues.list_open_issues(_or, token=_tok, limit=10)
+                                            except _gh_issues.GhIssuesError as _e:
+                                                log.warning("GH_ISSUES_LIST failed: %s", _e)
+                                                return f"I'm afraid I couldn't reach GitHub, sir. {_e}"
+                                            if not issues:
+                                                return f"No open issues on {_or}, sir."
+                                            top3 = issues[:3]
+                                            top_str = "; ".join(
+                                                f"#{i['number']}: {i['title']}" for i in top3
+                                            )
+                                            return (
+                                                f"{len(issues)} open issue{'s' if len(issues) != 1 else ''} on {_or}, sir. "
+                                                f"Top: {top_str}."
+                                            )
+                                        asyncio.create_task(
+                                            _lookup_and_report("github-issues", _do_gh_issues_list, ws, history=history, voice_state=voice_state)
+                                        )
+                                elif embedded_action["action"] == "gh_issue_create":
+                                    raw_arg = embedded_action["target"].strip()
+                                    parts = raw_arg.split("|", 2)
+                                    if len(parts) < 3 or not parts[0].strip() or not parts[1].strip():
+                                        response_text = "I need the repo, title, and body to create an issue, sir. Try: owner/repo|title|body."
+                                    else:
+                                        owner_repo = parts[0].strip()
+                                        issue_title = parts[1].strip()
+                                        issue_body = parts[2].strip()
+                                        from openclaw_ports import gh_issues as _gh_issues
+                                        _gh_token = _vault_get("GITHUB_TOKEN")
+                                        async def _do_gh_issue_create(
+                                            _or=owner_repo, _t=issue_title, _b=issue_body, _tok=_gh_token
+                                        ) -> str:
+                                            try:
+                                                result = await _gh_issues.create_issue(_or, title=_t, body=_b, token=_tok)
+                                            except _gh_issues.GhIssuesError as _e:
+                                                log.warning("GH_ISSUE_CREATE failed: %s", _e)
+                                                return f"I'm afraid I couldn't create the issue, sir. {_e}"
+                                            return f"Done, sir. Issue #{result['number']} opened on {_or}."
+                                        asyncio.create_task(
+                                            _lookup_and_report("github-create-issue", _do_gh_issue_create, ws, history=history, voice_state=voice_state)
+                                        )
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
@@ -2717,12 +2791,18 @@ class PreferencesUpdate(BaseModel):
     user_name: str = ""
     honorific: str = "sir"
     calendar_accounts: str = "auto"
+    user_location: str = ""
+    user_latitude: str = ""
+    user_longitude: str = ""
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
                "TTS_PROVIDER", "TTS_VOICE",
-               "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
+               "STT_PROVIDER", "SIDECAR_URL",
+               "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
+               "USER_LATITUDE", "USER_LONGITUDE", "USER_LOCATION",
+               "GITHUB_TOKEN"}
     if body.key_name not in allowed:
         raise HTTPException(status_code=400, detail="key not allowed")
     sess = _vault_mod.session()
@@ -2730,6 +2810,44 @@ async def api_settings_keys(body: KeyUpdate):
         raise HTTPException(status_code=423, detail="vault locked")
     sess.settings.set(body.key_name, body.key_value)
     return {"ok": True}
+
+
+@app.post("/api/stt")
+async def api_stt(request: Request, audio: UploadFile = File(...)) -> dict:
+    """Speech-to-text via the host sidecar. Replaces Chrome Web Speech for
+    privacy when STT_PROVIDER=whisper.
+
+    Per security-advisor required fix #5: the transcript returned by this
+    endpoint enters the system as user-provided text — same trust posture as
+    Web Speech transcripts. Callers route it back through the existing voice
+    handler (no privileged bypass).
+    """
+    import sidecar_client as _sidecar_client
+
+    contents = await audio.read()
+
+    transcript = await _sidecar_client.stt_via_sidecar(
+        contents, mime_type=audio.content_type or "audio/webm"
+    )
+
+    # Audit log (security-advisor required fix #2): metadata only.
+    # The transcript TEXT is NEVER logged. transcript_returned is a bool.
+    try:
+        import audit_log as _audit_log
+        ip = request.client.host if request and request.client else ""
+        n_bytes = len(contents)
+        transcript_returned = bool(transcript)
+        _audit_log.record(
+            action="stt_request",
+            source="api-stt",
+            target=f"ip={ip} bytes={n_bytes} transcript_returned={transcript_returned}",
+            success=transcript_returned,
+        )
+    except Exception:
+        pass  # audit failures must not break user-facing requests
+
+    return {"text": transcript}
+
 
 @app.post("/api/settings/test-anthropic")
 async def api_test_anthropic(body: KeyTest):
@@ -2809,6 +2927,11 @@ async def api_get_preferences():
         "calendar_accounts": vault_dict.get("CALENDAR_ACCOUNTS", "auto"),
         "tts_provider": vault_dict.get("TTS_PROVIDER", "auto"),
         "tts_voice": vault_dict.get("TTS_VOICE", ""),
+        "stt_provider": vault_dict.get("STT_PROVIDER", "web_speech"),
+        "github_token_set": bool(vault_dict.get("GITHUB_TOKEN", "").strip()),
+        "user_location": vault_dict.get("USER_LOCATION", ""),
+        "user_latitude": vault_dict.get("USER_LATITUDE", ""),
+        "user_longitude": vault_dict.get("USER_LONGITUDE", ""),
     }
 
 @app.post("/api/settings/preferences")
@@ -2819,6 +2942,9 @@ async def api_save_preferences(body: PreferencesUpdate):
     sess.settings.set("USER_NAME", body.user_name)
     sess.settings.set("HONORIFIC", body.honorific)
     sess.settings.set("CALENDAR_ACCOUNTS", body.calendar_accounts)
+    sess.settings.set("USER_LOCATION", body.user_location)
+    sess.settings.set("USER_LATITUDE", body.user_latitude)
+    sess.settings.set("USER_LONGITUDE", body.user_longitude)
     return {"success": True}
 
 # ---------------------------------------------------------------------------
