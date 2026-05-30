@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -1240,7 +1241,17 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
 
     # Sidecar path (Docker host with the host-sidecar daemon running).
     if provider in ("auto", "sidecar"):
-        audio = await sidecar_client.tts_via_sidecar(text, voice=voice)
+        engine = (_vault_get("TTS_ENGINE", "say") or "say").strip().lower()
+        piper_voice = (_vault_get("TTS_PIPER_VOICE", "en_GB-alan-medium") or "en_GB-alan-medium").strip()
+        # Piper voices are IDs like "en_GB-alan-medium", not friendly names.
+        # The sidecar enforces ^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$ and 400s on a
+        # bad value; fall back to the default so a misconfigured field can't
+        # silence JARVIS.
+        if not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$", piper_voice):
+            log.warning("TTS_PIPER_VOICE %r is not a valid piper voice id; using default", piper_voice)
+            piper_voice = "en_GB-alan-medium"
+        sidecar_voice = piper_voice if engine == "piper" else voice
+        audio = await sidecar_client.tts_via_sidecar(text, voice=sidecar_voice, engine=engine)
         if audio is not None:
             _session_tokens["tts_calls"] += 1
             _append_usage_entry(0, 0, "tts")
@@ -2798,7 +2809,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
-               "TTS_PROVIDER", "TTS_VOICE",
+               "TTS_PROVIDER", "TTS_VOICE", "TTS_ENGINE", "TTS_PIPER_VOICE",
                "STT_PROVIDER", "SIDECAR_URL",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
                "USER_LATITUDE", "USER_LONGITUDE", "USER_LOCATION",
@@ -2927,6 +2938,8 @@ async def api_get_preferences():
         "calendar_accounts": vault_dict.get("CALENDAR_ACCOUNTS", "auto"),
         "tts_provider": vault_dict.get("TTS_PROVIDER", "auto"),
         "tts_voice": vault_dict.get("TTS_VOICE", ""),
+        "tts_engine": vault_dict.get("TTS_ENGINE", "say"),
+        "tts_piper_voice": vault_dict.get("TTS_PIPER_VOICE", "en_GB-alan-medium"),
         "stt_provider": vault_dict.get("STT_PROVIDER", "web_speech"),
         "github_token_set": bool(vault_dict.get("GITHUB_TOKEN", "").strip()),
         "user_location": vault_dict.get("USER_LOCATION", ""),

@@ -49,7 +49,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
 | `templates.py`        | Response templates                               |
 | `tracking.py`         | Per-event usage tracking                         |
 | `openclaw_ports/`     | Python ports of MIT-licensed OpenClaw extensions. See `openclaw_ports/NOTICE.md`. Currently: `tts_local_cli` (macOS `say` wrapper, replaces Fish Audio when host is macOS). |
-| `host-sidecar/`       | macOS host daemon exposing `/tts` and `/stt`. NOT part of the Docker image; installed via `host-sidecar/setup.sh`. |
+| `host-sidecar/`       | macOS host daemon exposing `/tts` and `/stt`. NOT part of the Docker image; installed via `host-sidecar/setup.sh`. `/tts` has two engines: `say`→`audio/m4a` (default) and `piper`→`audio/wav` (opt-in, isolated venv). |
 
 ## Startup sequence (vault unlock → ready)
 1. Server starts; LLM/TTS clients are **not** constructed yet.
@@ -68,7 +68,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
    conversation buffer. The response may contain `[ACTION:X]` tags.
 4. If an action tag is present, `actions.execute_action` dispatches it
    (e.g. `open_terminal`, `open_browser`, `open_claude_in_project`).
-5. The textual reply is passed to `synthesize_speech`: `text → synthesize_speech → (TTS_PROVIDER dispatch → local CLI || sidecar || Fish Audio) → bytes`. When `TTS_PROVIDER=sidecar` or `auto` + sidecar available, the sidecar path is used instead of Fish Audio. The resulting audio bytes are base64-encoded and shipped over the WS as `{"type":"audio"}`.
+5. The textual reply is passed to `synthesize_speech`: `text → synthesize_speech → (TTS_PROVIDER dispatch → local CLI || sidecar || Fish Audio) → bytes`. When `TTS_PROVIDER=sidecar` or `auto` + sidecar available, the sidecar path is used instead of Fish Audio. The sidecar's `/tts` itself picks an engine by vault key `TTS_ENGINE` ∈ {say, piper}: `say` returns `audio/m4a` (default), `piper` (OHF-Voice/piper1-gpl, GPL-3.0, run as a subprocess from a second *isolated* venv with its own voice dir under the sidecar state dir) returns `audio/wav`, falling back to `say` if piper is unavailable. The response carries an `X-TTS-Engine-Used` header. The resulting audio bytes are base64-encoded and shipped over the WS as `{"type":"audio"}`.
    - **STT branch:** if `STT_PROVIDER=whisper`, the browser POSTs raw audio to `/api/stt` → server forwards to sidecar (`/api/stt`) → sidecar runs `whisper-cli` → transcript returned. Step 1 above then uses that transcript instead of Chrome Web Speech.
 6. Conversation buffer is rolled forward; old messages summarized.
 
