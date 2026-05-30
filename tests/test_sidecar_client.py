@@ -125,7 +125,6 @@ def test_read_token_missing_returns_empty(monkeypatch):
     assert sidecar_client._read_token() == ""
 
 
-<<<<<<< HEAD
 # ---------------------------------------------------------------------------
 # /spawn client
 # ---------------------------------------------------------------------------
