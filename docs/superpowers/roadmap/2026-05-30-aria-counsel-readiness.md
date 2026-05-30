@@ -8,15 +8,15 @@ This document tracks the work to upgrade Aria from "voice assistant" to "persona
 
 ---
 
-## Open architectural questions (answer before Phase 1 implementation)
+## Open architectural questions (answered 2026-05-30)
 
-| ID | Question | Status |
+| ID | Question | Decision |
 |---|---|---|
-| Q1 | What kind of counsel? (advisor / sounding-board / friend-with-judgment / therapist-adjacent / mode-switching among all) | open |
-| Q2 | Local-LLM trade-off: never-leaves-Mac vs response quality + latency. Always-local, counsel-only-local, or hybrid? | open |
-| Q3 | Crisis-floor scope: which deterministic categories trigger the floor (self-harm, substance, violence, mental-health distress)? | open |
-| Q4 | Vault recovery: one-time printed code, recovery questions, or accept "lose passphrase = lose Aria"? | open |
-| Q5 | Idle auto-lock: minutes of inactivity threshold? Lock on WS disconnect? | open |
+| Q1 | Counsel role | **All four modes** — strategic advisor + sounding board + friend-with-judgment + therapist-adjacent. Requires mode-declaration system (Phase 2A) where the user voices which mode is active. |
+| Q2 | Local-LLM trade-off | **Counsel-only-local.** Sealed conversations stay on the Mac (Ollama via sidecar). Non-sealed sessions continue using Anthropic for quality. |
+| Q3 | Crisis-floor scope | **All four categories** — explicit self-harm (Tier 1), substance crisis (Tier 1), acute panic/dissociation (Tier 1), indirect distress (Tier 2 context flag only). |
+| Q4 | Vault recovery | **BIP-39 24-word phrase.** Printed once at bootstrap, user stores offline. |
+| Q5 | Idle auto-lock threshold | open — defer to security-advisor on the spec; default proposed `IDLE_LOCK_S=900` (15 min). |
 
 ---
 
@@ -94,12 +94,12 @@ This document tracks the work to upgrade Aria from "voice assistant" to "persona
 
 | # | Item | IDs closed | Spec | PR | Status |
 |---|---|---|---|---|---|
-| 1A | Local-LLM mode (Ollama) | S1, S13 | TBD | — | spec pending |
-| 1B | Conversation deletion + auto-expire | S2 | TBD | — | spec pending |
-| 1C | Idle auto-lock | S3 | TBD | — | spec pending |
-| 1D | Secrets-detection redactor | S4 | TBD | — | spec pending |
-| 1E | Vault paper-recovery code | S5, F11 | TBD | — | spec pending |
-| 1F | Crisis-floor detection | S7 | TBD | — | spec pending |
+| 1A | Local-LLM mode (Ollama) | S1, S13 | [`2026-05-30-local-llm-mode-design.md`](../specs/2026-05-30-local-llm-mode-design.md) | — | spec drafted — pending security-advisor review |
+| 1B | Conversation deletion + auto-expire | S2 | [`2026-05-30-conversation-deletion-design.md`](../specs/2026-05-30-conversation-deletion-design.md) | — | spec drafted — pending security-advisor review |
+| 1C | Idle auto-lock | S3 | [`2026-05-30-idle-auto-lock-design.md`](../specs/2026-05-30-idle-auto-lock-design.md) | — | spec drafted — pending security-advisor review |
+| 1D | Secrets-detection redactor | S4 | [`2026-05-30-secrets-redactor-design.md`](../specs/2026-05-30-secrets-redactor-design.md) | — | spec drafted — pending security-advisor review |
+| 1E | Vault BIP-39 recovery code | S5, F11 | [`2026-05-30-vault-recovery-design.md`](../specs/2026-05-30-vault-recovery-design.md) | — | spec drafted — pending security-advisor review |
+| 1F | Crisis-floor detection | S7 | [`2026-05-30-crisis-floor-design.md`](../specs/2026-05-30-crisis-floor-design.md) | — | spec drafted — pending security-advisor review |
 
 ---
 
@@ -155,4 +155,5 @@ This document tracks the work to upgrade Aria from "voice assistant" to "persona
 
 ## Change log
 
-- 2026-05-30 — Document created. Phase 1 spec generation dispatched (subagents A/B/D/F).
+- 2026-05-30 — Document created. Six Phase 1 specs drafted in parallel via subagents (1A, 1B, 1C, 1D, 1E, 1F).
+- 2026-05-30 — User answered Q1 (all four counsel modes), Q2 (counsel-only-local), Q3 (all four crisis categories), Q4 (BIP-39 24-word recovery). Implementation priority for Phase 1 confirmed.
