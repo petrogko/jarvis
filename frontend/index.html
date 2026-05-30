@@ -3,10 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>JARVIS</title>
+    <title>Aria</title>
     <link rel="stylesheet" href="/src/style.css" />
     <link rel="stylesheet" href="/src/lock-screen.css" />
     <link rel="stylesheet" href="/src/transcript-panel.css" />
+    <link rel="stylesheet" href="/src/task-sidebar.css" />
     <link rel="stylesheet" href="/src/text-input.css" />
   </head>
   <body>
@@ -38,13 +39,15 @@
     <div id="menu-dropdown" style="display:none">
       <button id="btn-settings">Settings</button>
       <button id="btn-transcript-toggle">Hide transcript</button>
+      <button id="btn-tasks-toggle">Hide tasks</button>
       <button id="btn-restart">Restart Server</button>
       <button id="btn-fix-self">Fix Yourself</button>
     </div>
 
     <div id="status-text"></div>
-    <div id="jarvis-label">JARVIS</div>
+    <div id="jarvis-label">ARIA</div>
     <div id="error-text"></div>
+    <div id="task-sidebar" style="display: flex"></div>
     <div id="transcript-panel" style="display: flex"></div>
     <div id="text-input"></div>
     <script type="module" src="/src/main.ts"></script>

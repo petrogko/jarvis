@@ -320,3 +320,74 @@ def test_api_stt_audit_log_entry_written(isolated_vault, monkeypatch, tmp_path):
     # Critically: the transcript TEXT itself must NEVER appear in the audit log.
     for line in log_lines:
         assert "hello" not in line, f"transcript text leaked into audit log: {line!r}"
+
+
+# ---------------------------------------------------------------------------
+# Task sidebar — dispatch events + /api/dispatches
+# ---------------------------------------------------------------------------
+
+def test_dispatch_event_extracts_url_from_summary():
+    """_dispatch_event pulls the dev-server URL out of the summary text and
+    shapes the record into the WS/REST event the sidebar renders."""
+    import server
+    rec = {
+        "id": 7,
+        "project_name": "client-engine",
+        "status": "completed",
+        "summary": "Running at http://localhost:5174",
+        "updated_at": 123.0,
+        "created_at": 100.0,
+    }
+    ev = server._dispatch_event(rec)
+    assert ev == {
+        "type": "dispatch",
+        "id": 7,
+        "project": "client-engine",
+        "status": "completed",
+        "summary": "Running at http://localhost:5174",
+        "url": "http://localhost:5174",
+        "ts": 123.0,
+    }
+
+
+def test_dispatch_event_url_none_when_absent():
+    import server
+    ev = server._dispatch_event({"id": 1, "project_name": "x", "status": "building"})
+    assert ev["url"] is None
+    assert ev["summary"] == ""
+
+
+@pytest.mark.anyio
+async def test_api_list_dispatches_returns_shaped_events(isolated_vault):
+    """api_list_dispatches returns recent dispatches in the event shape,
+    newest-first. Called directly (single thread) since the SQLCipher conn is
+    thread-affine and TestClient would run the handler in a worker thread."""
+    import server
+    isolated_vault.bootstrap("pp")
+    isolated_vault.unlock("pp")
+
+    did = server.dispatch_registry.register("my-app", "/tmp/my-app", "build it")
+    server.dispatch_registry.update_status(did, "completed", summary="Running at http://localhost:5180")
+
+    out = await server.api_list_dispatches()
+    items = out["dispatches"]
+    assert len(items) >= 1
+    top = items[0]
+    assert top["project"] == "my-app"
+    assert top["status"] == "completed"
+    assert top["url"] == "http://localhost:5180"
+    assert top["type"] == "dispatch"
+
+
+def test_dispatch_registry_on_change_hook_fires():
+    """register/update_status invoke the on_change hook with the dispatch id
+    so the server can broadcast without instrumenting every call site."""
+    from dispatch_registry import DispatchRegistry
+    import vault
+    # Use a throwaway in-memory-ish registry sharing the unlocked vault is
+    # overkill here; just verify the hook plumbing on the class directly.
+    reg = DispatchRegistry()
+    fired = []
+    reg.on_change = lambda did: fired.append(did)
+    reg._fire(42)
+    assert fired == [42]
