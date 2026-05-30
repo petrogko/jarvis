@@ -44,3 +44,4 @@ def test_health_ok_with_correct_token(client):
     assert body["status"] == "ok"
     assert "whisper_model" in body
     assert "say_available" in body
+    assert "piper_available" in body
