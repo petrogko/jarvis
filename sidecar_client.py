@@ -101,3 +101,72 @@ async def sidecar_health() -> dict | None:
         return r.json() if r.status_code == 200 else None
     except httpx.HTTPError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# /spawn — claude -p on the host for JARVIS-in-Docker (see spec 2026-05-29).
+# ---------------------------------------------------------------------------
+
+async def spawn_via_sidecar(
+    prompt: str,
+    workdir: str,
+    *,
+    timeout_s: float = 300.0,
+    agent: str = "claude",
+) -> dict | None:
+    """POST /spawn. Returns {session_id, status, started_at} on 200; None on
+    any failure (auth, network, validation 4xx, admission 429, server 5xx)."""
+    token = _read_token()
+    if not token:
+        log.warning("sidecar token not available; skipping sidecar /spawn")
+        return None
+    url = f"{_base_url()}/spawn"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.post(
+                url,
+                headers={_HEADER_NAME: token},
+                json={"prompt": prompt, "workdir": workdir,
+                      "agent": agent, "timeout_s": timeout_s},
+            )
+        if r.status_code != 200:
+            log.warning("sidecar /spawn returned %s: %s", r.status_code, r.text[:200])
+            return None
+        return r.json()
+    except httpx.HTTPError as e:
+        log.info("sidecar /spawn unreachable: %s", e)
+        return None
+
+
+async def spawn_status(session_id: str) -> dict | None:
+    """GET /spawn/{session_id}. Returns the session dict on 200; None on
+    404/network failure. Caller polls this until status != 'running'."""
+    token = _read_token()
+    if not token:
+        return None
+    url = f"{_base_url()}/spawn/{session_id}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            r = await http.get(url, headers={_HEADER_NAME: token})
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except httpx.HTTPError:
+        return None
+
+
+async def spawn_kill(session_id: str) -> dict | None:
+    """DELETE /spawn/{session_id}. Returns the final session dict on 200;
+    None on 404/network failure."""
+    token = _read_token()
+    if not token:
+        return None
+    url = f"{_base_url()}/spawn/{session_id}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            r = await http.delete(url, headers={_HEADER_NAME: token})
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except httpx.HTTPError:
+        return None
