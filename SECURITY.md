@@ -55,6 +55,26 @@ Fish Audio was the only TTS path pre-wave-1. As of `openclaw_ports/tts_local_cli
 
 By default, Chrome Web Speech sends audio to Google. When `STT_PROVIDER=whisper`, voice audio is POSTed to `/api/stt` on the JARVIS server and forwarded to the host sidecar, which runs `whisper-cli` locally. Voice audio never leaves the local machine. This replaces the Chrome Web Speech ↔ Google path entirely.
 
+## Sidecar /spawn — claude on the host for JARVIS-in-Docker
+
+The host sidecar's new `POST /spawn` endpoint runs `claude -p --dangerously-skip-permissions` on the macOS host. This unblocks `[ACTION:BUILD]`, `[ACTION:RESEARCH]`, and `[ACTION:PROMPT_PROJECT]` from the JARVIS Docker container (no `claude` CLI in the container; no host shell). See `docs/superpowers/specs/2026-05-29-sidecar-spawn-design.md` for the full design + the security-advisor GO-WITH-FIXES ruleset.
+
+**Critical context — read this first:** the prompt sent to `/spawn` comes from JARVIS, which sources it from LLM-classified intent — i.e., from claude's own response to user (and potentially LLM-attacker-influenced) input. A prompt-injection that reaches `[ACTION:BUILD]` reaches `claude` on the host verbatim. **The sidecar does not sanitize prompt content.** The workdir allowlist is the only structural guard on what claude does on disk; the argv allowlist is the only structural guard on which flags claude runs with. This matches today's on-host `claude_runner` posture — `/spawn` does not increase the threat surface, only relocates where the spawn happens.
+
+Load-bearing guards:
+
+- **Workdir allowlist** (`host-sidecar/jarvis_sidecar/cwd_allowlist.py`). Default root: `~/Desktop` only. `JARVIS_EXTRA_PROJECT_DIRS` adds opt-in roots. `~/Development` is intentionally NOT in the default — that tree typically holds repos with secrets, deploy keys, and unrelated production code.
+- **Hard-deny list** (unconditional, overrides any allowlist root): `~` itself, `~/Library`, `~/.ssh`, `~/.aws`, `~/.config`, `~/.gnupg`, `~/.kube`, `~/.docker`. Also any path containing a `.env`, `.env.*`, `.envrc`, or `.git` component.
+- **Symlink-as-input** rejected (subtree symlinks under an allowed workdir are accepted — same posture as today's on-host `claude_runner`).
+- **Argv allowlist**: exactly `["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]`. No user-controlled flags.
+- **Prompt via stdin pipe** — never argv (no `ps` leakage), never temp file, never logged.
+- **Caps**: 64 KiB prompt, 1 MiB soft output (truncate-and-mark), 4 MiB hard output (kill process group).
+- **Timeout**: default 300s, clamped [60, 1800].
+- **Concurrency cap** 3 simultaneous + **rate cap** 10/min rolling — either limit hit → 429.
+- **Process group isolation** (`start_new_session=True` + `killpg`) reaps MCP-server orphans on timeout / DELETE / output-overrun.
+- **Audit log** at `~/Library/Logs/jarvis-sidecar.log`, one JSON line per spawn/reject/finish/timeout/killed/delete, with `session_id` + caller-token-fingerprint (first 8 hex of sha256). **Prompt bytes never appear in any log line** (regression test enforces this with a canary string).
+- **`/health.spawn_ready`** is behind `require_token`.
+
 ## Trust boundaries
 
 | Boundary | Transport | Auth |

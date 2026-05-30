@@ -49,7 +49,7 @@ etc. All macOS integrations are AppleScript via `osascript`.
 | `templates.py`        | Response templates                               |
 | `tracking.py`         | Per-event usage tracking                         |
 | `openclaw_ports/`     | Python ports of MIT-licensed OpenClaw extensions. See `openclaw_ports/NOTICE.md`. Currently: `tts_local_cli` (macOS `say` wrapper, replaces Fish Audio when host is macOS). |
-| `host-sidecar/`       | macOS host daemon exposing `/tts` and `/stt`. NOT part of the Docker image; installed via `host-sidecar/setup.sh`. |
+| `host-sidecar/`       | macOS host daemon exposing `/tts`, `/stt`, and `/spawn`. NOT part of the Docker image; installed via `host-sidecar/setup.sh`. `/spawn` runs `claude -p` on the host so JARVIS-in-Docker can dispatch BUILD/RESEARCH/PROMPT_PROJECT — `claude_runner` auto-detects the container (`/.dockerenv`) and uses the sidecar backend. See `docs/superpowers/specs/2026-05-29-sidecar-spawn-design.md`. |
 
 ## Startup sequence (vault unlock → ready)
 1. Server starts; LLM/TTS clients are **not** constructed yet.

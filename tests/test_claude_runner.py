@@ -27,9 +27,16 @@ def _reload_runner(backend_env: str | None = None):
     return cr
 
 
-def test_default_backend_is_direct():
-    cr = _reload_runner(None)
-    assert cr.BACKEND == "direct"
+def test_default_backend_is_direct(monkeypatch):
+    """On a non-container host with no JARVIS_CLAUDE_RUNNER env, default to direct."""
+    # _running_in_docker is true inside the CI container; pin to False so this
+    # test exercises the host-install default.
+    os.environ.pop("JARVIS_CLAUDE_RUNNER", None)
+    if "claude_runner" in sys.modules:
+        del sys.modules["claude_runner"]
+    import claude_runner as cr
+    monkeypatch.setattr(cr, "_running_in_docker", lambda: False)
+    assert cr._detect_default_backend() == "direct"
 
 
 def test_explicit_direct_backend():
@@ -47,9 +54,15 @@ def test_invalid_backend_falls_back_to_direct():
     assert cr.BACKEND == "direct"
 
 
-def test_blank_backend_falls_back_to_direct():
-    cr = _reload_runner("")
-    assert cr.BACKEND == "direct"
+def test_blank_backend_falls_back_to_default(monkeypatch):
+    """Blank env var → fall through to auto-detection (not a hard 'direct')."""
+    os.environ["JARVIS_CLAUDE_RUNNER"] = ""
+    if "claude_runner" in sys.modules:
+        del sys.modules["claude_runner"]
+    import claude_runner as cr
+    # On a non-container host the auto-detected default is "direct".
+    monkeypatch.setattr(cr, "_running_in_docker", lambda: False)
+    assert cr._detect_default_backend() == "direct"
 
 
 def test_case_insensitive():
@@ -129,3 +142,87 @@ def test_docker_cmd_resolves_relative_cwd():
     mount_arg = cmd[cmd.index("-v") + 1]
     # Should be absolute after resolve()
     assert mount_arg.startswith("/")
+
+
+# ---------------------------------------------------------------------------
+# Sidecar backend — runs claude on the host via the sidecar /spawn endpoint.
+# ---------------------------------------------------------------------------
+
+def test_sidecar_backend_recognized():
+    cr = _reload_runner("sidecar")
+    assert cr.BACKEND == "sidecar"
+
+
+def test_default_in_docker_picks_sidecar(monkeypatch):
+    """When /.dockerenv exists (we're inside a container) the default backend
+    flips to 'sidecar' so dispatches actually fire."""
+    if "claude_runner" in sys.modules:
+        del sys.modules["claude_runner"]
+    os.environ.pop("JARVIS_CLAUDE_RUNNER", None)
+    import claude_runner as cr
+    monkeypatch.setattr(cr, "_running_in_docker", lambda: True)
+    assert cr._detect_default_backend() == "sidecar"
+
+
+def test_default_not_in_docker_keeps_direct(monkeypatch):
+    if "claude_runner" in sys.modules:
+        del sys.modules["claude_runner"]
+    os.environ.pop("JARVIS_CLAUDE_RUNNER", None)
+    import claude_runner as cr
+    monkeypatch.setattr(cr, "_running_in_docker", lambda: False)
+    assert cr._detect_default_backend() == "direct"
+
+
+async def test_run_sidecar_backend_polls_to_completion(monkeypatch, tmp_path):
+    """End-to-end through the sidecar backend with sidecar_client mocked.
+    Verifies POST happens, poll loop terminates on non-running status,
+    and (exit_code, output, b"") is returned in claude_runner's shape."""
+    cr = _reload_runner("sidecar")
+    workdir = str(tmp_path)
+
+    spawn_calls = []
+    status_calls = []
+
+    async def fake_spawn(prompt, wd, *, timeout_s=300.0, agent="claude"):
+        spawn_calls.append({"prompt": prompt, "workdir": wd,
+                            "timeout_s": timeout_s, "agent": agent})
+        return {"session_id": "sess-1", "status": "running", "started_at": 0.0}
+
+    async def fake_status(sid):
+        status_calls.append(sid)
+        if len(status_calls) == 1:
+            return {"session_id": sid, "status": "running"}
+        return {
+            "session_id": sid, "status": "finished",
+            "exit_code": 0, "output": "all done sir",
+        }
+
+    import sidecar_client
+    monkeypatch.setattr(sidecar_client, "spawn_via_sidecar", fake_spawn)
+    monkeypatch.setattr(sidecar_client, "spawn_status", fake_status)
+
+    exit_code, stdout, stderr = await cr.run(
+        prompt=b"hello", cwd=workdir, timeout=10.0,
+    )
+    assert exit_code == 0
+    assert stdout == b"all done sir"
+    assert stderr == b""
+    assert spawn_calls[0]["prompt"] == "hello"
+    assert spawn_calls[0]["agent"] == "claude"
+    assert len(status_calls) == 2
+
+
+async def test_run_sidecar_backend_failed_spawn_returns_nonzero(monkeypatch, tmp_path):
+    """If /spawn rejects (rate cap / validation / network), the runner returns
+    nonzero with an explanatory stderr — no crash, no orphaned poll."""
+    cr = _reload_runner("sidecar")
+    import sidecar_client
+    async def fake_spawn(prompt, wd, *, timeout_s=300.0, agent="claude"):
+        return None
+    monkeypatch.setattr(sidecar_client, "spawn_via_sidecar", fake_spawn)
+
+    exit_code, stdout, stderr = await cr.run(
+        prompt=b"x", cwd=str(tmp_path), timeout=5.0,
+    )
+    assert exit_code != 0
+    assert b"rejected" in stderr
