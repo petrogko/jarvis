@@ -12,6 +12,7 @@ import { openSettings, checkFirstTimeSetup } from "./settings";
 import { awaitUnlock } from "./lock-screen";
 import { withAuthHeaders } from "./auth-token";
 import { attachTranscript, toggleTranscript, pushUserLine } from "./transcript-panel";
+import { attachTaskSidebar, toggleTaskSidebar } from "./task-sidebar";
 import { attachTextInput } from "./text-input";
 import { startRecording, type RecordingSession } from "./stt";
 import "./style.css";
@@ -79,6 +80,7 @@ import "./style.css";
 
   // Attach debug transcript panel — must happen before onMessage wiring below
   attachTranscript(socket);
+  attachTaskSidebar(socket);
   attachTextInput(socket);
 
   function transition(newState: State) {
@@ -330,6 +332,15 @@ import "./style.css";
     menuDropdown.style.display = "none";
     const isVisible = toggleTranscript();
     btnTranscriptToggle.textContent = isVisible ? "Hide transcript" : "Show transcript";
+  });
+
+  // Task sidebar toggle button
+  const btnTasksToggle = document.getElementById("btn-tasks-toggle")!;
+  btnTasksToggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menuDropdown.style.display = "none";
+    const isVisible = toggleTaskSidebar();
+    btnTasksToggle.textContent = isVisible ? "Hide tasks" : "Show tasks";
   });
 
   // Settings button
