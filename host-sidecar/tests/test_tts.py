@@ -91,3 +91,57 @@ def test_tts_rejects_empty_text(client):
     c, _ = client
     r = c.post("/tts", json={"text": "", "voice": "Alex"}, headers=HEADERS)
     assert r.status_code == 400
+
+
+def _patch_say(monkeypatch, payload=b"AAC-SAY"):
+    async def fake_say(*argv, **kwargs):
+        pathlib.Path(argv[4]).write_bytes(payload)
+        return _FakeProc(returncode=0)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_say)
+
+
+async def test_tts_engine_piper_when_available(client, monkeypatch):
+    c, _ = client
+    from jarvis_sidecar import app as app_mod
+
+    monkeypatch.setattr(app_mod, "piper_is_available", lambda: True)
+    async def fake_synth(text, voice):
+        return b"RIFFWAVE-PIPER"
+    monkeypatch.setattr(app_mod, "piper_synthesize", fake_synth)
+
+    r = c.post("/tts", json={"text": "hello", "voice": "en_GB-alan-medium", "engine": "piper"}, headers=HEADERS)
+    assert r.status_code == 200
+    assert r.content == b"RIFFWAVE-PIPER"
+    assert r.headers["content-type"].startswith("audio/wav")
+    assert r.headers.get("X-TTS-Engine-Used") == "piper"
+
+
+async def test_tts_engine_piper_falls_back_to_say_when_unavailable(client, monkeypatch):
+    c, _ = client
+    from jarvis_sidecar import app as app_mod
+
+    monkeypatch.setattr(app_mod, "piper_is_available", lambda: False)
+    _patch_say(monkeypatch, b"AAC-SAY-FALLBACK")
+
+    r = c.post("/tts", json={"text": "hello", "voice": "Alex", "engine": "piper"}, headers=HEADERS)
+    assert r.status_code == 200
+    assert r.content == b"AAC-SAY-FALLBACK"
+    assert r.headers.get("X-TTS-Engine-Used") == "say"
+
+
+async def test_tts_engine_piper_bad_voice_returns_400(client, monkeypatch):
+    c, _ = client
+    from jarvis_sidecar import app as app_mod
+
+    monkeypatch.setattr(app_mod, "piper_is_available", lambda: True)
+    # Real synthesize runs and rejects the bad voice → PiperError "invalid voice" → 400.
+    r = c.post("/tts", json={"text": "hi", "voice": "--evil", "engine": "piper"}, headers=HEADERS)
+    assert r.status_code == 400
+
+
+async def test_tts_default_engine_is_say(client, monkeypatch):
+    c, _ = client
+    _patch_say(monkeypatch, b"AAC-SAY")
+    r = c.post("/tts", json={"text": "hello", "voice": "Alex"}, headers=HEADERS)
+    assert r.status_code == 200
+    assert r.headers.get("X-TTS-Engine-Used") == "say"

@@ -64,7 +64,15 @@ async def test_tts_via_sidecar_happy_path(isolated_token, monkeypatch):
     assert method == "POST"
     assert url.endswith("/tts")
     assert headers["X-SIDECAR-Token"] == "test-token-xyz"
-    assert body == {"text": "hello", "voice": "Alex"}
+    assert body == {"text": "hello", "voice": "Alex", "engine": "say"}
+
+
+async def test_tts_via_sidecar_passes_engine(isolated_token, monkeypatch):
+    fake = _FakeClient(_FakeResp(200, content=b"WAV"))
+    monkeypatch.setattr(sidecar_client.httpx, "AsyncClient", lambda **kw: fake)
+    await sidecar_client.tts_via_sidecar("hi", voice="en_GB-alan-medium", engine="piper")
+    _, url, headers, body = fake.calls[0]
+    assert body == {"text": "hi", "voice": "en_GB-alan-medium", "engine": "piper"}
 
 
 async def test_tts_via_sidecar_returns_none_on_connection_error(isolated_token, monkeypatch):
@@ -114,4 +122,14 @@ def test_read_token_missing_returns_empty(monkeypatch):
     """When the bind-mount isn't there (host install, no sidecar), _read_token
     returns "" rather than raising."""
     monkeypatch.setattr(sidecar_client, "_TOKEN_PATH", pathlib.Path("/nonexistent/path"))
+    assert sidecar_client._read_token() == ""
+
+
+def test_read_token_directory_returns_empty(tmp_path, monkeypatch):
+    """When the sidecar isn't installed, Docker auto-creates the bind-mount
+    target as an empty DIRECTORY. _read_token must treat that as "no sidecar"
+    (IsADirectoryError) instead of raising and killing the TTS/greeting path."""
+    token_dir = tmp_path / "token"
+    token_dir.mkdir()
+    monkeypatch.setattr(sidecar_client, "_TOKEN_PATH", token_dir)
     assert sidecar_client._read_token() == ""
