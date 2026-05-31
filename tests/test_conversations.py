@@ -180,3 +180,152 @@ def test_record_message_raises_when_vault_locked(isolated_vault):
     # Don't unlock.
     with pytest.raises(vault.VaultLockedError):
         conversations.create_conversation()
+
+
+# ---------- Phase 1B — deletion + TTL + sweeper -------------------------
+
+def test_delete_conversation_returns_message_count(unlocked):
+    import conversations
+    cid = conversations.create_conversation()
+    conversations.record_message(cid, "user", "one")
+    conversations.record_message(cid, "assistant", "two")
+    conversations.record_message(cid, "user", "three")
+    n = conversations.delete_conversation(cid)
+    assert n == 3
+    # Row is gone after delete.
+    assert conversations.get_conversation(cid) is None
+    # And messages truly removed.
+    assert conversations.get_messages(cid) == []
+
+
+def test_delete_unknown_conversation_returns_zero(unlocked):
+    import conversations
+    assert conversations.delete_conversation(99999) == 0
+
+
+def test_set_expiry_then_find_expired(unlocked, monkeypatch):
+    import conversations
+    cid = conversations.create_conversation()
+    # Expire in the past so find_expired catches it.
+    monkeypatch.setattr(conversations.time, "time", lambda: 1000.0)
+    conversations.set_expiry(cid, ttl_seconds=10.0)  # expires_at = 1010
+    monkeypatch.setattr(conversations.time, "time", lambda: 2000.0)
+    assert cid in conversations.find_expired()
+
+
+def test_set_expiry_clamps_to_30_days(unlocked, monkeypatch):
+    """Advisor required fix #3: TTL cap of 30 days enforced server-side."""
+    import conversations
+    cid = conversations.create_conversation()
+    monkeypatch.setattr(conversations.time, "time", lambda: 1000.0)
+    # Try to set TTL of 1 year. Should be clamped to 30 days.
+    conversations.set_expiry(cid, ttl_seconds=365 * 86400.0)
+    conv = conversations.get_conversation(cid)
+    expected_max = 1000.0 + 30 * 86400.0
+    assert conv["expires_at"] <= expected_max + 1
+
+
+def test_set_expiry_zero_clears_expiry(unlocked):
+    import conversations
+    cid = conversations.create_conversation()
+    conversations.set_expiry(cid, ttl_seconds=60.0)
+    assert conversations.get_conversation(cid)["expires_at"] is not None
+    conversations.set_expiry(cid, ttl_seconds=0)
+    assert conversations.get_conversation(cid)["expires_at"] is None
+
+
+def test_set_expiry_negative_clears_expiry(unlocked):
+    import conversations
+    cid = conversations.create_conversation()
+    conversations.set_expiry(cid, ttl_seconds=60.0)
+    conversations.set_expiry(cid, ttl_seconds=-5.0)
+    assert conversations.get_conversation(cid)["expires_at"] is None
+
+
+def test_set_expiry_unknown_returns_false(unlocked):
+    import conversations
+    assert conversations.set_expiry(99999, ttl_seconds=60.0) is False
+
+
+# ---- Advisor required fix #6: sweeper must skip ACTIVE conversation ids ----
+
+def test_find_expired_skips_active_ids(unlocked, monkeypatch):
+    """Mid-conversation, the sweeper must NOT touch the conversation the
+    user is actively talking through (PR #25 resume-window race)."""
+    import conversations
+    cid_active = conversations.create_conversation()
+    cid_idle = conversations.create_conversation()
+    monkeypatch.setattr(conversations.time, "time", lambda: 1000.0)
+    conversations.set_expiry(cid_active, ttl_seconds=1.0)
+    conversations.set_expiry(cid_idle, ttl_seconds=1.0)
+    monkeypatch.setattr(conversations.time, "time", lambda: 2000.0)
+
+    expired = conversations.find_expired(active_ids={cid_active})
+    assert cid_idle in expired
+    assert cid_active not in expired
+
+
+def test_run_sweeper_once_returns_counts(unlocked, monkeypatch):
+    import conversations
+    cid = conversations.create_conversation()
+    conversations.record_message(cid, "user", "A")
+    conversations.record_message(cid, "assistant", "B")
+    monkeypatch.setattr(conversations.time, "time", lambda: 1000.0)
+    conversations.set_expiry(cid, ttl_seconds=1.0)
+    monkeypatch.setattr(conversations.time, "time", lambda: 2000.0)
+
+    summary = conversations.run_sweeper_once()
+    assert summary["deleted_conversations"] == 1
+    assert summary["deleted_messages"] == 2
+    # Conversation actually gone after sweep.
+    assert conversations.get_conversation(cid) is None
+
+
+def test_run_sweeper_once_skips_active(unlocked, monkeypatch):
+    """Active-id discipline at the sweeper-loop level."""
+    import conversations
+    cid = conversations.create_conversation()
+    monkeypatch.setattr(conversations.time, "time", lambda: 1000.0)
+    conversations.set_expiry(cid, ttl_seconds=1.0)
+    monkeypatch.setattr(conversations.time, "time", lambda: 2000.0)
+
+    summary = conversations.run_sweeper_once(active_ids={cid})
+    assert summary["deleted_conversations"] == 0
+    # Still around.
+    assert conversations.get_conversation(cid) is not None
+
+
+def test_run_sweeper_once_isolates_per_id_failures(unlocked, monkeypatch):
+    """Advisor required fix #4: one bad row doesn't stop the sweeper."""
+    import conversations
+    cid_a = conversations.create_conversation()
+    cid_b = conversations.create_conversation()
+    monkeypatch.setattr(conversations.time, "time", lambda: 1000.0)
+    conversations.set_expiry(cid_a, ttl_seconds=1.0)
+    conversations.set_expiry(cid_b, ttl_seconds=1.0)
+    monkeypatch.setattr(conversations.time, "time", lambda: 2000.0)
+
+    # Patch delete_conversation to fail on cid_a only.
+    original = conversations.delete_conversation
+    def patched(cid: int) -> int:
+        if cid == cid_a:
+            raise RuntimeError("simulated transient failure")
+        return original(cid)
+    monkeypatch.setattr(conversations, "delete_conversation", patched)
+
+    summary = conversations.run_sweeper_once()
+    # cid_b succeeded; cid_a swallowed.
+    assert summary["deleted_conversations"] == 1
+    assert conversations.get_conversation(cid_b) is None
+    # cid_a still exists because patched delete raised.
+    assert conversations.get_conversation(cid_a) is not None
+
+
+def test_run_sweeper_once_never_raises_on_find_failure(unlocked, monkeypatch):
+    """find_expired exception is isolated; the sweeper still returns cleanly."""
+    import conversations
+    def boom(*a, **kw):
+        raise RuntimeError("simulated DB failure")
+    monkeypatch.setattr(conversations, "find_expired", boom)
+    summary = conversations.run_sweeper_once()
+    assert summary == {"deleted_conversations": 0, "deleted_messages": 0}
