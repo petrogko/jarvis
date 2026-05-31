@@ -1862,6 +1862,30 @@ async def api_get_task(task_id: str):
     return {"task": task.to_dict()}
 
 
+@app.get("/api/conversations")
+async def api_list_conversations():
+    """Recent conversations (newest first) — for a future History panel.
+    Returns [] when the vault is locked / DB unavailable."""
+    import conversations as _conv
+    try:
+        return {"conversations": _conv.list_recent_conversations(limit=20)}
+    except Exception:
+        return {"conversations": []}
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def api_get_conversation(conversation_id: int):
+    """Full transcript for a single conversation."""
+    import conversations as _conv
+    try:
+        conv = _conv.get_conversation(conversation_id)
+    except Exception:
+        return JSONResponse(status_code=503, content={"error": "vault unavailable"})
+    if conv is None:
+        return JSONResponse(status_code=404, content={"error": "conversation not found"})
+    return {"conversation": conv, "messages": _conv.get_messages(conversation_id)}
+
+
 @app.post("/api/tasks")
 async def api_create_task(req: TaskRequest):
     try:
@@ -2352,7 +2376,28 @@ async def voice_handler(ws: WebSocket):
         return
     await ws.accept()
     task_manager.register_websocket(ws)
+
+    # Conversation persistence: resume the most-recent conversation if it had
+    # a message within the resume window; otherwise start a new one. Seed the
+    # history list with the last N messages so the LLM has immediate context.
+    import conversations as _conv
+    try:
+        conversation_id, resumed = _conv.get_or_create_active_conversation()
+    except Exception as e:
+        log.warning("conversations: could not resume (%s); starting ephemeral", e)
+        conversation_id = None
+        resumed = False
     history: list[dict] = []
+    if conversation_id is not None and resumed:
+        try:
+            prior = _conv.load_recent_messages(conversation_id, limit=40)
+            history = [{"role": m["role"], "content": m["content"]} for m in prior]
+            log.info("conversations: resumed #%d with %d prior messages",
+                     conversation_id, len(history))
+        except Exception as e:
+            log.warning("conversations: failed to load prior messages (%s)", e)
+    elif conversation_id is not None:
+        log.info("conversations: started new #%d", conversation_id)
     work_session = WorkSession()
     planner = TaskPlanner()
 
@@ -2862,6 +2907,14 @@ async def voice_handler(ws: WebSocket):
                 # Update history
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": response_text})
+
+                # Persist the turn — survives container restarts + vault locks.
+                if conversation_id is not None:
+                    try:
+                        _conv.record_message(conversation_id, "user", user_text)
+                        _conv.record_message(conversation_id, "assistant", response_text)
+                    except Exception as e:
+                        log.warning("conversations: failed to persist turn (%s)", e)
 
                 # Three-tier memory: also track in session buffer
                 session_buffer.append({"role": "user", "content": user_text})
