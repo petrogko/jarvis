@@ -32,12 +32,28 @@ def model_dir() -> Path:
     return state_dir() / "models"
 
 
+# Piper TTS engine (GPL-3.0) — installed in its OWN venv, never imported.
+def piper_venv() -> Path:
+    return state_dir() / "piper-venv"
+
+
+def piper_data_dir() -> Path:
+    return state_dir() / "piper-voices"
+
+
 # Default Whisper model file under model_dir().
 DEFAULT_WHISPER_MODEL: Final[str] = "ggml-base.en.bin"
+
+# Default Piper voice (British English). Configurable per-request.
+DEFAULT_PIPER_VOICE: Final[str] = "en_GB-alan-medium"
 
 # Hard timeouts (seconds) for the wrapped binaries.
 SAY_TIMEOUT_S: Final[float] = 30.0
 WHISPER_TIMEOUT_S: Final[float] = 60.0
+PIPER_TIMEOUT_S: Final[float] = 30.0
+
+# Cap Piper input — uncontrolled WAV allocation is a resource-exhaustion vector.
+PIPER_MAX_TEXT_CHARS: Final[int] = 2000
 
 # Multipart upload cap for /stt — defends against resource exhaustion.
 STT_MAX_BYTES: Final[int] = 5 * 1024 * 1024  # 5 MiB

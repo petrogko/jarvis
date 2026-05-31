@@ -33,6 +33,8 @@ disabled by default; opting in requires presenting an auth token.
 |-----------------------------------------------|-------------|-----------------------------------------------------------|---------------------|
 | `ANTHROPIC_API_KEY`, `FISH_API_KEY`, `FISH_VOICE_ID` | Secret | `data/secrets.db` (SQLCipher, Argon2id-derived key) | TLS to provider     |
 | `TTS_PROVIDER`, `TTS_VOICE`                           | Secret | `data/secrets.db` (SQLCipher, Argon2id-derived key) | vault → `synthesize_speech` dispatcher only; no additional network surface |
+| `TTS_ENGINE` (∈ {say, piper})                         | Secret | `data/secrets.db` (SQLCipher, Argon2id-derived key) | vault → sidecar `/tts` engine selector; no additional network surface |
+| `TTS_PIPER_VOICE` (default `en_GB-alan-medium`)       | Secret | `data/secrets.db` (SQLCipher, Argon2id-derived key) | vault → sidecar `/tts` argv (validated); no additional network surface |
 | `auth_token`                                  | Secret      | `data/secrets.db` (was `data/.local_token` file)         | header/query        |
 | `data/secrets.db`                             | Secret      | SQLCipher, key derived via Argon2id (256 MiB / t=3 / p=4); unlocked by user passphrase on every container start | n/a |
 | `data/kdf.salt`                               | Public      | 16 bytes random, mode 0644; public by design             | n/a                 |
@@ -50,6 +52,28 @@ disabled by default; opting in requires presenting an auth token.
 ## TTS egress
 
 Fish Audio was the only TTS path pre-wave-1. As of `openclaw_ports/tts_local_cli` (MIT, ported from OpenClaw), macOS host installs default to local `say` for TTS — no third-party egress for the audio. The Docker container still falls back to Fish Audio because Linux lacks `say`. Provider chosen by vault key `TTS_PROVIDER` ∈ {auto, local_cli, fish_audio, sidecar}; default 'auto' tries local first, falls back to Fish. When `TTS_PROVIDER=sidecar` (or `auto` + sidecar available), no Fish Audio egress occurs — audio is synthesized by the host sidecar via `say`.
+
+## Piper TTS engine (sidecar)
+
+The host sidecar's `/tts` endpoint has two engines, selected by vault key
+`TTS_ENGINE` ∈ {say, piper} (default `say`). Piper (OHF-Voice/piper1-gpl)
+is **GPL-3.0** and is never imported by JARVIS or the sidecar: it lives in
+an *isolated* Python venv under the sidecar state dir and is invoked
+**only as a subprocess** (`python -m piper`) — same arm's-length boundary
+as `say`/`whisper-cli`/`ffmpeg`, so the GPL does not reach JARVIS's MIT
+code. Install is opt-in (`./host-sidecar/setup.sh --with-piper`).
+
+Guards:
+- The voice name (`TTS_PIPER_VOICE`, default `en_GB-alan-medium`) is
+  validated against `^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$` before use. This
+  is an argv-injection guard: the voice flows into `piper` argv **before**
+  the `--` separator, so a leading-dash name could otherwise be parsed as
+  a piper flag.
+- Piper input text is capped at 2000 chars.
+- Voice models are SHA256-pinned at setup time (the pin slot in
+  `setup.sh` warns if unset).
+- `/tts` falls back to `say` when piper is unavailable; `/health` reports
+  `piper_available`.
 
 ## STT egress
 

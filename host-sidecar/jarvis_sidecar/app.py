@@ -15,6 +15,11 @@ from . import config
 from .auth import HEADER_NAME, header_matches
 from .tts import synthesize, TTSError
 from .stt import transcribe, STTError
+from .piper_engine import (
+    synthesize as piper_synthesize,
+    is_available as piper_is_available,
+    PiperError,
+)
 
 
 def _load_token() -> str:
@@ -37,6 +42,7 @@ def _whisper_model_name() -> str:
 class _TTSBody(BaseModel):
     text: str
     voice: str = "Alex"
+    engine: str = "say"
 
 
 def create_app() -> FastAPI:
@@ -53,10 +59,26 @@ def create_app() -> FastAPI:
             "status": "ok",
             "whisper_model": _whisper_model_name(),
             "say_available": _say_available(),
+            "piper_available": piper_is_available(),
         }
 
     @app.post("/tts")
     async def tts(body: _TTSBody, _auth: None = Depends(require_token)) -> Response:
+        # Piper path (GPL subprocess). Falls back to say if unavailable.
+        if body.engine == "piper" and piper_is_available():
+            try:
+                audio = await piper_synthesize(body.text, body.voice)
+            except PiperError as e:
+                msg = str(e)
+                if any(k in msg.lower() for k in ("empty", "too long", "invalid voice")):
+                    raise HTTPException(status_code=400, detail=msg)
+                raise HTTPException(status_code=500, detail=msg)
+            return Response(
+                content=audio, media_type="audio/wav",
+                headers={"X-TTS-Engine-Used": "piper"},
+            )
+
+        # say path (default + fallback).
         try:
             audio = await synthesize(body.text, body.voice)
         except TTSError as e:
@@ -64,7 +86,10 @@ def create_app() -> FastAPI:
             if "empty" in msg.lower():
                 raise HTTPException(status_code=400, detail=msg)
             raise HTTPException(status_code=500, detail=msg)
-        return Response(content=audio, media_type="audio/m4a")
+        return Response(
+            content=audio, media_type="audio/m4a",
+            headers={"X-TTS-Engine-Used": "say"},
+        )
 
     @app.post("/stt")
     async def stt(

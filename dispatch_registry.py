@@ -62,7 +62,18 @@ def init_dispatch_db():
 class DispatchRegistry:
     def __init__(self):
         # Schema init is deferred to first use — vault is locked at server boot.
-        pass
+        # on_change(dispatch_id:int) fires after every register/update_status so
+        # the server can push a live WS event without instrumenting each call
+        # site. Set by server.py; stays None in tests / standalone use.
+        self.on_change = None
+
+    def _fire(self, dispatch_id: int):
+        if self.on_change is None:
+            return
+        try:
+            self.on_change(dispatch_id)
+        except Exception:
+            log.exception("dispatch on_change hook failed")
 
     def register(self, project_name: str, project_path: str, prompt: str) -> int:
         """Register a new dispatch. Returns dispatch ID."""
@@ -76,6 +87,7 @@ class DispatchRegistry:
         dispatch_id = cur.lastrowid
         conn.commit()
         log.info(f"Registered dispatch #{dispatch_id}: {project_name}")
+        self._fire(dispatch_id)
         return dispatch_id
 
     def update_status(self, dispatch_id: int, status: str,
@@ -83,20 +95,30 @@ class DispatchRegistry:
         """Update dispatch status and optionally store response/summary."""
         conn = _get_conn()
         now = time.time()
+        completed_at = now if status in ("completed", "failed", "timeout") else None
+        # Build the SET clause from whichever optional fields were supplied, so
+        # a summary-only update (the common "Running at <url>" case) persists
+        # the summary instead of being silently dropped.
+        sets = ["status=?", "updated_at=?", "completed_at=?"]
+        params: list = [status, now, completed_at]
         if response is not None:
-            conn.execute(
-                "UPDATE dispatches SET status=?, claude_response=?, summary=?, updated_at=?, "
-                "completed_at=? WHERE id=?",
-                (status, response[:5000], summary or "", now,
-                 now if status in ("completed", "failed", "timeout") else None,
-                 dispatch_id)
-            )
-        else:
-            conn.execute(
-                "UPDATE dispatches SET status=?, updated_at=? WHERE id=?",
-                (status, now, dispatch_id)
-            )
+            sets.append("claude_response=?")
+            params.append(response[:5000])
+        if summary is not None:
+            sets.append("summary=?")
+            params.append(summary)
+        params.append(dispatch_id)
+        conn.execute(f"UPDATE dispatches SET {', '.join(sets)} WHERE id=?", params)
         conn.commit()
+        self._fire(dispatch_id)
+
+    def get_by_id(self, dispatch_id: int) -> dict | None:
+        """Fetch a single dispatch record by id."""
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT * FROM dispatches WHERE id=?", (dispatch_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
     def get_most_recent(self) -> dict | None:
         """Get the most recently updated dispatch."""
