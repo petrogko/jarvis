@@ -79,6 +79,31 @@ Guards:
 
 By default, Chrome Web Speech sends audio to Google. When `STT_PROVIDER=whisper`, voice audio is POSTed to `/api/stt` on the JARVIS server and forwarded to the host sidecar, which runs `whisper-cli` locally. Voice audio never leaves the local machine. This replaces the Chrome Web Speech ↔ Google path entirely.
 
+## Safety floor (crisis_floor)
+
+Phase-1 hardening per `docs/superpowers/specs/2026-05-30-crisis-floor-design.md`. A deterministic regex filter (`crisis_floor.py`) runs on every user turn **before** `generate_response`. The scanner refuses bare strings — it requires a typed `UserTurn` object — so a routing mistake cannot slip untrusted-content (mail/calendar quotes) into the detector by accident.
+
+This is **NOT** a content-moderation layer and **NOT** a clinical tool. It is a small reliable floor that ensures: when explicit self-harm ideation, active substance crisis, or acute panic statements occur, Aria's response is deterministic (ground-validate-refer-stay) rather than whatever the LLM happens to generate. The advisor's "tiny local classifier" was dropped — regex-only with sentence-level negation handling is simpler and audit-clean.
+
+**Tier 1 (auto-response):** `ideation` / `substance` / `panic` / `self_harm_method`. Bypasses `generate_response`; the WS handler emits a `crisis_floor_response` frame with `neutral_voice: true` so the frontend can render with a distinct voice — Aria's warm Cori delivering "988 lifeline is there" is tonally wrong and possibly harmful.
+
+**Tier 2 (context flag only):** indirect distress signals. Aggregated into a daily counter, never logged per-event. A `TIER2_PERSONA_FLAG` is injected into Aria's system context with explicit "do not reveal" instructions so she adjusts behavior without disclosing the flag.
+
+**Suppression** (sentence-level, not 5-token window):
+- Negation token anywhere earlier in the same sentence — "I would never want to die," "I would never, after everything I've been through this year, want to kill myself."
+- Temporal-past markers anywhere in the sentence — "I used to want to die," "back when I was drinking I wanted to die."
+- Fiction/quote markers — "character / lyrics / song / movie / she said / he said."
+
+**Vault keys:** `CRISIS_FLOOR_MODE` ∈ {`on`, `tier2_only`, `off`}, default `on`; `CRISIS_FLOOR_LOCALE` ∈ {`us`, `gb`, `intl`}, default `us`.
+
+**i18n:** Response templates are keyed by `(category, locale)`. US: 988 Suicide and Crisis Lifeline + 911 + Poison Control. GB: Samaritans 116 123 + 999 + NHS 111. INTL: Befrienders Worldwide pointer.
+
+**Audit:** Tier 1 entries record `(tier, category, conversation_id, expires_at)` — never the matched text, never user content. Tier 1 entries auto-expire after 30 days so a follow-up CLI can purge them without touching the rest of the audit log. Tier 2 is aggregated daily; per-event distress-suspicion logging is intentionally absent.
+
+**Post-filter:** `scan_assistant_output()` checks Aria's generated text for `substance` and `self_harm_method` categories only (where Aria authoring has no legitimate counsel use). `ideation` and `panic` in Aria's output stay log-only because roleplay is plausible.
+
+**Known limitations:** Idiomatic "made me want to die" / "dying over here" as exhaustion or dark humor — the suppression doesn't cover these yet; some idiomatic FPs may still fire. Documented as a tightening target for Phase 2. The floor responses are written in plain calm tone; no warmth markers, no Aria persona phrases.
+
 ## Trust boundaries
 
 | Boundary | Transport | Auth |

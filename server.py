@@ -61,6 +61,7 @@ from auth import (
 from file_perms import harden_secrets_at_startup
 import claude_pool
 import audit_log
+import crisis_floor as _crisis_floor
 from cwd_allowlist import assert_allowed_cwd
 import claude_runner
 
@@ -1417,6 +1418,9 @@ async def generate_response(
 # Shared state
 task_manager = ClaudeTaskManager(max_concurrent=3)
 anthropic_client: Optional[anthropic.AsyncAnthropic] = None
+# Phase 1F crisis floor — Tier 2 daily aggregator. Per-event Tier 2 logging
+# was advisor-flagged as over-surveillance; daily counts only.
+_crisis_tier2_counter = _crisis_floor.Tier2DailyCounter()
 cached_projects: list[dict] = []
 recently_built: list[dict] = []  # [{"name": str, "path": str, "time": float}]
 dispatch_registry = DispatchRegistry()
@@ -2584,7 +2588,64 @@ async def voice_handler(ws: WebSocket):
 
                 # ── CHAT MODE: fast keyword detection + Haiku ──
                 else:
-                    action = detect_action_fast(user_text)
+                    # ── Crisis floor — deterministic pre-LLM safety filter ──
+                    # Per docs/superpowers/specs/2026-05-30-crisis-floor-design.md.
+                    # MUST run BEFORE generate_response so even a jailbroken
+                    # persona cannot bypass Tier 1. Mode: on | tier2_only | off.
+                    crisis_mode = (_vault_get("CRISIS_FLOOR_MODE", "on") or "on").strip().lower()
+                    crisis_locale = (_vault_get("CRISIS_FLOOR_LOCALE", "us") or "us").strip().lower()
+                    crisis_detection = None
+                    if crisis_mode != "off":
+                        try:
+                            crisis_detection = _crisis_floor.scan(
+                                _crisis_floor.UserTurn(text=user_text)
+                            )
+                        except Exception:
+                            log.exception("crisis_floor: scan failed (suppressed)")
+                            crisis_detection = None
+
+                    if (crisis_detection is not None
+                            and crisis_detection.tier == 1
+                            and crisis_mode == "on"):
+                        # Tier 1: bypass generate_response entirely. Use the
+                        # deterministic, locale-keyed response. Audit, then
+                        # emit a frame the frontend can render with a
+                        # neutral voice (advisor required fix #7).
+                        floor_text = _crisis_floor.response_for(
+                            crisis_detection, locale=crisis_locale,
+                        ) or ""
+                        try:
+                            audit_log.record(
+                                action="crisis_floor_engaged",
+                                source="user_text",
+                                target=crisis_detection.category,
+                                success=True,
+                            )
+                        except Exception:
+                            pass
+                        response_text = floor_text
+                        # Emit a marker so the frontend knows to render with
+                        # a distinct neutral voice / earcon. The Aria warm
+                        # Cori delivering "988 lifeline is there" is tonally
+                        # wrong; let the frontend decide TTS strategy.
+                        try:
+                            await ws.send_json({
+                                "type": "crisis_floor_response",
+                                "text": floor_text,
+                                "neutral_voice": True,
+                                "category": crisis_detection.category,
+                            })
+                        except Exception:
+                            pass
+                        # Skip the entire action/LLM dispatch path.
+                        action = None
+                    else:
+                        action = detect_action_fast(user_text)
+                        # Tier 2: aggregate in the daily counter (advisor
+                        # recommendation — per-event is over-surveillance).
+                        if (crisis_detection is not None
+                                and crisis_detection.tier == 2):
+                            _crisis_tier2_counter.increment(crisis_detection.category)
 
                     if action:
                         if action["action"] == "open_terminal":
@@ -2947,6 +3008,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
+               "CRISIS_FLOOR_MODE", "CRISIS_FLOOR_LOCALE",
                "TTS_PROVIDER", "TTS_VOICE", "TTS_ENGINE", "TTS_PIPER_VOICE",
                "STT_PROVIDER", "SIDECAR_URL",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
