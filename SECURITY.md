@@ -79,6 +79,20 @@ Guards:
 
 By default, Chrome Web Speech sends audio to Google. When `STT_PROVIDER=whisper`, voice audio is POSTed to `/api/stt` on the JARVIS server and forwarded to the host sidecar, which runs `whisper-cli` locally. Voice audio never leaves the local machine. This replaces the Chrome Web Speech ↔ Google path entirely.
 
+## Data-handling: secrets redaction
+
+Phase-1 hardening per `docs/superpowers/specs/2026-05-30-secrets-redactor-design.md`. A regex+validator filter (`secrets_redactor.py`) runs on every user turn pre-LLM and on every assistant reply pre-persistence. The same redacted string is what the LLM sees AND what we persist — the "LLM-input == persisted" invariant is load-bearing.
+
+**Categories:** SSN (with SSA issuance-rule validator), credit cards (Luhn-validated), ABA routing (mod-10), API keys (Anthropic / OpenAI / Tavily / GitHub PAT / Slack / AWS / Stripe / webhook-secrets), JWT (three-segment + `eyJ` heuristic), PEM blocks, OpenSSH private keys, spoken `ssh-rsa` public keys, bcrypt hashes, IBAN (mod-97), spoken passwords ("the password is X" / "use X as the password/PIN" / "type X" / "enter X" / "passcode is" / "PIN colon").
+
+**Modes:** vault key `SECRETS_MODE` ∈ {`off`, `warn`, `strict`}, default `warn`. `warn` and `strict` currently differ only in voice-UX (deferred); both redact pre-persistence and pre-LLM. `off` is pass-through.
+
+**Audit log:** one `secret_detected` line per detection, recording only `(source=user_text|assistant_text, target=category)`. The matched bytes NEVER appear in any log — including exception paths (each detector is wrapped in `try/except` that logs only the exception class name).
+
+**Defense-in-depth:** hard 4 KiB input cap + 50 ms per-call wall-clock guard prevent ReDoS amplification on the catastrophic-backtrack-candidate patterns (cards, IBAN). `extract_action` runs **before** redaction on assistant replies so action tags survive intact.
+
+**Token rendering:** within the same turn, matches are replaced with `[REDACTED:<category>]` so the LLM has enough context to reason. On resume-load (PR #25's `load_recent_messages`), `collapse_for_resume()` strips category labels and groups consecutive redactions — defends against inferential aggregation ("four `[REDACTED:ssn]` → user has many SSNs to discuss").
+
 ## Trust boundaries
 
 | Boundary | Transport | Auth |

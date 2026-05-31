@@ -61,6 +61,7 @@ from auth import (
 from file_perms import harden_secrets_at_startup
 import claude_pool
 import audit_log
+import secrets_redactor as _secrets_redactor
 from cwd_allowlist import assert_allowed_cwd
 import claude_runner
 
@@ -2584,6 +2585,10 @@ async def voice_handler(ws: WebSocket):
 
                 # ── CHAT MODE: fast keyword detection + Haiku ──
                 else:
+                    # Read SECRETS_MODE once per turn so both the LLM-path and
+                    # the action-handler-path see the same setting.
+                    secrets_mode = (_vault_get("SECRETS_MODE", "warn") or "warn").strip().lower()
+
                     action = detect_action_fast(user_text)
 
                     if action:
@@ -2627,6 +2632,20 @@ async def voice_handler(ws: WebSocket):
                         if not anthropic_client:
                             response_text = "API key not configured."
                         else:
+                            # Secrets redactor — pre-LLM filter on the user's
+                            # text (per spec 2026-05-30-secrets-redactor-design
+                            # §1.4: same redacted string the LLM sees is what
+                            # we persist). OFF mode is pass-through.
+                            if secrets_mode in ("warn", "strict"):
+                                redacted_user, user_dets = _secrets_redactor.redact(user_text)
+                                for d in user_dets:
+                                    audit_log.record(
+                                        action="secret_detected",
+                                        source="user_text",
+                                        target=d.category,
+                                        success=True,
+                                    )
+                                user_text = redacted_user
                             response_text = await generate_response(
                                 user_text, anthropic_client, task_manager,
                                 cached_projects, history,
@@ -2859,6 +2878,21 @@ async def voice_handler(ws: WebSocket):
                                             _lookup_and_report("web-search", _do_web_search, ws, history=history, voice_state=voice_state)
                                         )
 
+                # Secrets redactor — second pass on the assistant reply
+                # (Aria can echo a secret back). Per advisor required fix #1
+                # this runs AFTER extract_action (already invoked at line ~2521),
+                # so action tags survive intact. Same SECRETS_MODE as above.
+                if secrets_mode in ("warn", "strict"):
+                    redacted_assistant, asst_dets = _secrets_redactor.redact(response_text)
+                    for d in asst_dets:
+                        audit_log.record(
+                            action="secret_detected",
+                            source="assistant_text",
+                            target=d.category,
+                            success=True,
+                        )
+                    response_text = redacted_assistant
+
                 # Update history
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": response_text})
@@ -2947,6 +2981,7 @@ class PreferencesUpdate(BaseModel):
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
+               "SECRETS_MODE",
                "TTS_PROVIDER", "TTS_VOICE", "TTS_ENGINE", "TTS_PIPER_VOICE",
                "STT_PROVIDER", "SIDECAR_URL",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
