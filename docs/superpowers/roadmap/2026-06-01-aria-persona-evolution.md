@@ -95,7 +95,55 @@ Categories 1, 2, 3, 6 compose into a single coherent persona overhaul:
 - All of #4 embodiment phase 2 (substantial sidecar + frontend work, its own PR)
 - All of #5 voice texture (separate PR per item — each is non-trivial)
 
+---
+
+## Phase B — Digital Partner (the bigger goal)
+
+User feedback: "A digital partner is a larger persona than just assistant. I want her an expert in all fields — business, risk, law, partnerships, finance, being a father." The gap between "assistant" and "partner" isn't model capability (Opus already has expert generalist knowledge). The gap is **what she persistently knows about HIM** — his stakes, his family, his deals, his patterns. Five capabilities in order of leverage:
+
+### B.1 Persistent user profile ← **highest leverage, smallest scope**
+A markdown file she maintains at `data/aria_profile.md` (encrypted via vault — PII). She reads it every turn; she updates it via a `[PROFILE_UPDATE: ...]` tag the same way she emits `[REG:X]`. Server-side merger applies updates. The profile holds: who he is, family (kids' names, ages, partner), active stakes (deals, decisions), open worries, values, patterns, recent threads. Foundation for everything that follows.
+- **Status:** not started. ~1 PR, ~150 LOC.
+
+### B.2 Semantic memory across all conversations
+lancedb + embeddings (OpenClaw memory-lancedb port). Every conversation turn is embedded. Aria can recall "the conversation three weeks ago where you were debating the term sheet" when relevant. Unblocks "you mentioned this before — has it changed?" and recurring-thread surfacing (1.5 from Phase A).
+- **Status:** not started. Multi-day. Depends on OpenClaw port.
+
+### B.3 Document ingestion
+Upload PDFs (contracts, term sheets, P&Ls, school reports). Sidecar extracts text + Aria summarizes + stores with metadata in semantic memory. Now "tell me what's wrong with this term sheet" actually reads the term sheet.
+- **Status:** not started. Multi-day. Depends on B.2 (storage) + sidecar PDF extract.
+
+### B.4 Domain priors
+Small markdown briefs per domain: `data/domains/legal.md`, `business.md`, `finance.md`, `risk.md`, `partnerships.md`, `fatherhood.md`. NOT general knowledge (Opus has it) — but the frameworks HE cares about, the red flags HE wants flagged, the questions HE wants her to ask. Loaded into context when a relevant turn fires (detected via keyword classifier on his message).
+- **Status:** not started. ~1 PR per domain. Iterative — start with one, refine, then expand.
+
+### B.5 Proactive turns
+Background loop scans recent conversations + calendar + open profile threads and decides if there's something worth surfacing on next connect. "You mentioned the partnership three weeks ago and went quiet. Where are you with it?" Right now she's reactive. A partner notices.
+- **Status:** not started. Multi-day. Depends on B.1 (open threads in profile) + B.2 (semantic recall).
+
+### Dependency graph
+
+```
+B.1 (profile) ──┬──> B.4 (domain priors plug into profile)
+                ├──> B.5 (proactive — needs open threads)
+                └──> (everything benefits from B.1)
+
+B.2 (semantic memory) ──┬──> B.3 (doc ingestion stores here)
+                        └──> B.5 (proactive needs recall)
+```
+
+### Recommended ship order
+
+1. **B.1** — biggest "she knows me" jump per LOC. Foundation.
+2. **B.4** — start with one domain, see how it lands, expand. Composes with B.1 immediately.
+3. **B.2** — structural commitment but unblocks B.3 and B.5.
+4. **B.3** — once B.2 is in, doc ingestion is small.
+5. **B.5** — last, after she has the data to actually surface anything meaningful.
+
+---
+
 ## Change log
 
 - 2026-06-01 — Document created. Phase A scope finalized.
 - 2026-06-01 — Pivot: explicit mode-switching removed in response to user feedback ("why should we pick modes?"). Replaced with implicit "reads the room" via prompt criteria. Settings UI dropdown removed; vault key deprecated. Strengthened intelligence/warmth/kindness/no-limits sections in the prompt to push harder on those axes (real insight, actual warmth, present kindness, no false hedging).
+- 2026-06-01 — Phase B added: "Digital Partner" capabilities (B.1 persistent profile, B.2 semantic memory, B.3 doc ingestion, B.4 domain priors, B.5 proactive turns). Triggered by user feedback: "I want her an expert in all fields. A digital partner is a larger persona than just assistant." Phase A handled tone/voice/avatar surface; Phase B handles knowing-him persistently.
