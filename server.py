@@ -1421,6 +1421,16 @@ cached_projects: list[dict] = []
 recently_built: list[dict] = []  # [{"name": str, "path": str, "time": float}]
 dispatch_registry = DispatchRegistry()
 
+# Phase 1B — active conversation registry. WS handlers add the conversation
+# they're currently serving on connect; the sweeper consults this set to
+# avoid deleting an in-flight conversation mid-turn (advisor required fix #6).
+_active_conversation_ids: set[int] = set()
+
+# Per-WS pending deletion confirms. Keyed to the WebSocket OBJECT (advisor
+# required fix #1) — NOT session/token — so a second tab on the same token
+# can't affirm a confirm it never saw. Each entry: {conv_id, expires_at}.
+_pending_conversation_deletions: dict = {}
+
 
 def _dispatch_event(rec: dict) -> dict:
     """Shape a dispatch DB record into the WS/REST event the task sidebar renders.
@@ -1649,6 +1659,37 @@ return windowList
     log.info("Context refresh thread started")
 
 
+async def _conversation_expiry_sweeper():
+    """Phase 1B background task — run conversations.run_sweeper_once every
+    5 minutes. Per advisor required fix #4 the sweeper never raises; per
+    required fix #6 it skips ``_active_conversation_ids`` so the
+    conversation you're currently using can't be deleted mid-turn."""
+    import conversations as _conv
+    SWEEP_INTERVAL_S = 300.0
+    while True:
+        try:
+            await asyncio.sleep(SWEEP_INTERVAL_S)
+        except asyncio.CancelledError:
+            raise
+        # Check vault is unlocked before each pass.
+        try:
+            if _vault_mod.session() is None:
+                continue
+            summary = _conv.run_sweeper_once(active_ids=set(_active_conversation_ids))
+            if summary["deleted_conversations"]:
+                try:
+                    audit_log.record(
+                        action="conversation_sweeper",
+                        source="sweeper",
+                        target=f"deleted_{summary['deleted_conversations']}",
+                        success=True,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("conversation sweeper: iteration failed (suppressed)")
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
@@ -1663,7 +1704,19 @@ async def lifespan(application: FastAPI):
     _refresh_context_sync()
     log.info("JARVIS server starting")
 
+    # Phase 1B — conversation expiry sweeper (background, vault-aware).
+    sweeper_task = asyncio.create_task(
+        _conversation_expiry_sweeper(),
+        name="conversation_expiry_sweeper",
+    )
+
     yield
+
+    sweeper_task.cancel()
+    try:
+        await sweeper_task
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
@@ -1884,6 +1937,53 @@ async def api_get_conversation(conversation_id: int):
     if conv is None:
         return JSONResponse(status_code=404, content={"error": "conversation not found"})
     return {"conversation": conv, "messages": _conv.get_messages(conversation_id)}
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def api_delete_conversation(conversation_id: int):
+    """Hard delete a conversation. Returns the count of deleted messages.
+    Per Phase 1B spec: NO recovery. Counsel-grade means gone is gone."""
+    import conversations as _conv
+    try:
+        n = _conv.delete_conversation(conversation_id)
+    except Exception:
+        return JSONResponse(status_code=503, content={"error": "vault unavailable"})
+    if n == 0 and _conv.get_conversation(conversation_id) is None:
+        return JSONResponse(status_code=404, content={"error": "conversation not found"})
+    try:
+        audit_log.record(
+            action="conversation_deleted",
+            source="api",
+            target=str(conversation_id),
+            success=True,
+        )
+    except Exception:
+        pass
+    return {"deleted_messages": n, "deleted_at": time.time()}
+
+
+class _ConversationPatchBody(BaseModel):
+    ttl_seconds: Optional[float] = None
+    title: Optional[str] = None
+
+
+@app.patch("/api/conversations/{conversation_id}")
+async def api_patch_conversation(conversation_id: int, body: _ConversationPatchBody):
+    """Set TTL or title. ``ttl_seconds`` is clamped server-side to 30 days
+    (advisor required fix #3). ``ttl_seconds=0`` or negative clears the TTL."""
+    import conversations as _conv
+    if body.ttl_seconds is None and body.title is None:
+        return JSONResponse(status_code=400, content={"error": "nothing to update"})
+    try:
+        if body.ttl_seconds is not None:
+            ok = _conv.set_expiry(conversation_id, body.ttl_seconds)
+            if not ok:
+                return JSONResponse(status_code=404, content={"error": "conversation not found"})
+        if body.title is not None:
+            _conv.set_title(conversation_id, body.title)
+    except Exception:
+        return JSONResponse(status_code=503, content={"error": "vault unavailable"})
+    return {"ok": True, "conversation": _conv.get_conversation(conversation_id)}
 
 
 @app.post("/api/tasks")
@@ -2387,6 +2487,10 @@ async def voice_handler(ws: WebSocket):
         log.warning("conversations: could not resume (%s); starting ephemeral", e)
         conversation_id = None
         resumed = False
+    # Phase 1B — register the conversation as active so the sweeper skips it
+    # (advisor required fix #6: no mid-conversation delete).
+    if conversation_id is not None:
+        _active_conversation_ids.add(conversation_id)
     history: list[dict] = []
     if conversation_id is not None and resumed:
         try:
@@ -2976,6 +3080,12 @@ async def voice_handler(ws: WebSocket):
         log.error(f"WebSocket error: {e}", exc_info=True)
     finally:
         task_manager.unregister_websocket(ws)
+        # Phase 1B — remove from active set so the sweeper can clean up
+        # if a TTL fires later. Also drop any pending deletion keyed to
+        # this WS (per advisor required fix #1, pending is per-connection).
+        if conversation_id is not None:
+            _active_conversation_ids.discard(conversation_id)
+        _pending_conversation_deletions.pop(id(ws), None)
 
 
 # ---------------------------------------------------------------------------
