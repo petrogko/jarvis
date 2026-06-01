@@ -22,16 +22,16 @@ Right now she's a witty British secretary who could be anyone's. The persistence
 | 1.5 | Recurring-thread surfacing — track which topics keep coming up | follow-up (needs embeddings) |
 | 1.6 | Reference specific past conversations by content | this PR |
 
-### 2. Mode declaration
+### 2. Reads the room (replaces explicit mode-switching)
 
-She defaults to friendly-witty for everything. Counsel-grade needs her to match the register.
+Original plan: explicit modes (advisor / sounding-board / friend / counsel) selected via vault key + UI dropdown. **Rejected** after user feedback ("why should we pick modes?"). A real person reads the room and adjusts implicitly. Aria should do the same. Made the LLM do the adjusting; gave it the criteria.
 
 | ID | Item | Status |
 |---|---|---|
-| 2.1 | `ARIA_MODE` vault key ∈ {advisor, sounding_board, friend, counsel, default} | this PR |
-| 2.2 | Mode-specific prompt addendum injected | this PR |
-| 2.3 | Voice command `[ACTION:SET_MODE <mode>]` so she can switch on user cue | this PR |
-| 2.4 | Auto-detect mode shifts from user signal (e.g. distress → counsel) | follow-up |
+| 2.1 | `ARIA_MODE` vault key — **deprecated**; no longer injected into prompt | done |
+| 2.2 | Settings UI mode dropdown — **removed** | done |
+| 2.3 | "HOW YOU READ THE ROOM" prompt section with 6 register-shift criteria | done |
+| 2.4 | Auto-detected mode shifts → load-bearing trust in the LLM via the prompt | done |
 
 ### 3. Real opinions and friction
 
@@ -96,3 +96,4 @@ Categories 1, 2, 3, 6 compose into a single coherent persona overhaul:
 ## Change log
 
 - 2026-06-01 — Document created. Phase A scope finalized.
+- 2026-06-01 — Pivot: explicit mode-switching removed in response to user feedback ("why should we pick modes?"). Replaced with implicit "reads the room" via prompt criteria. Settings UI dropdown removed; vault key deprecated. Strengthened intelligence/warmth/kindness/no-limits sections in the prompt to push harder on those axes (real insight, actual warmth, present kindness, no false hedging).
