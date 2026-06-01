@@ -85,12 +85,15 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
     ctx!.fillRect(0, 0, w, h);
 
     if (imgReady) {
-      // Cover-fit the image centered.
+      // Contain-fit centered with a small inset margin. Cover-fit on a
+      // fullscreen canvas produces an extreme close-up; contain-fit shows
+      // the whole portrait and the dark background fills the edges.
       const iw = img.naturalWidth;
       const ih = img.naturalHeight;
-      const scaleCover = Math.max(w / iw, h / ih);
-      const drawW = iw * scaleCover;
-      const drawH = ih * scaleCover;
+      const INSET = 0.92;
+      const scale = Math.min(w / iw, h / ih) * INSET;
+      const drawW = iw * scale;
+      const drawH = ih * scale;
       const dx = (w - drawW) / 2;
       const dy = (h - drawH) / 2;
 
@@ -120,6 +123,12 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
       if (blinkProgress < 1) {
         drawBlink(ctx!, dx, dy, drawW, drawH, blinkProgress);
       }
+
+      // Vignette — radial fade from clear at the portrait center to the
+      // background dark at the canvas edges. Hides the hard rectangle edge
+      // of the contain-fit image so the avatar feels embedded in the dark
+      // background rather than pasted on.
+      drawVignette(ctx!, w, h, dx, dy, drawW, drawH);
     }
 
     // State badge (small, low-contrast, bottom-right) — handy for debugging
@@ -221,6 +230,28 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
     c.beginPath();
     c.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     c.fill();
+    c.restore();
+  }
+
+  function drawVignette(
+    c: CanvasRenderingContext2D,
+    w: number, h: number,
+    dx: number, dy: number, drawW: number, drawH: number,
+  ) {
+    // Center of the portrait.
+    const cx = dx + drawW / 2;
+    const cy = dy + drawH * 0.45;  // weight slightly upward toward the face
+    // Inner radius: enough to keep the face clear. Outer: reach the canvas
+    // corners so the fade is complete at the edges.
+    const inner = Math.max(drawW, drawH) * 0.42;
+    const outer = Math.hypot(w, h) * 0.55;
+    const grad = c.createRadialGradient(cx, cy, inner, cx, cy, outer);
+    grad.addColorStop(0, "rgba(5, 5, 10, 0)");
+    grad.addColorStop(0.7, "rgba(5, 5, 10, 0.55)");
+    grad.addColorStop(1, "rgba(5, 5, 10, 0.95)");
+    c.save();
+    c.fillStyle = grad;
+    c.fillRect(0, 0, w, h);
     c.restore();
   }
 
