@@ -13,6 +13,7 @@ export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 export interface Orb {
   setState(s: OrbState): void;
   setAnalyser(a: AnalyserNode | null): void;
+  setRegister(r: string): void;
   destroy(): void;
 }
 
@@ -332,6 +333,7 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
       analyser = a;
       if (a) freqData = new Uint8Array(a.frequencyBinCount);
     },
+    setRegister(_r: string) { /* orb is register-agnostic */ },
     destroy() {
       destroyed = true;
       window.removeEventListener("resize", onResize);

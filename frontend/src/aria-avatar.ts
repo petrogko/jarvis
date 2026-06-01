@@ -25,9 +25,12 @@
 
 export type AvatarState = "idle" | "listening" | "thinking" | "speaking";
 
+export type AvatarRegister = "neutral" | "soft" | "counsel" | "dry" | "playful";
+
 export interface AriaAvatar {
   setState(s: AvatarState): void;
   setAnalyser(a: AnalyserNode | null): void;
+  setRegister(r: AvatarRegister): void;
 }
 
 const IMG_SRC = "/aria-avatar.png";
@@ -47,6 +50,7 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
   if (!ctx) throw new Error("aria-avatar: 2D canvas context unavailable");
 
   let state: AvatarState = "idle";
+  let register: AvatarRegister = "neutral";
   let analyser: AnalyserNode | null = null;
   // 512 bins covers ~12 kHz at 48 kHz sample rate / 2048 fftSize — enough
   // to bracket F1 (300–800 Hz) and F2 (800–2500 Hz) speech formants.
@@ -154,11 +158,21 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
 
   // ---------- helpers ------------------------------------------------------
 
+  // Per-register filter targets when speaking — micro-expression. Each
+  // is a small shift; we're tinting the same face, not transforming it.
+  const REGISTER_FILTERS: Record<AvatarRegister, string> = {
+    neutral:  "brightness(1.08)",
+    soft:     "brightness(1.04) saturate(1.10) contrast(0.96)",
+    counsel:  "brightness(0.92) saturate(0.96) contrast(1.04)",
+    dry:      "brightness(0.98) saturate(0.85)",
+    playful:  "brightness(1.12) saturate(1.15)",
+  };
+
   function filterFor(s: AvatarState): string | null {
     switch (s) {
       case "thinking":  return "brightness(0.85) saturate(0.85)";
       case "listening": return "brightness(1.05) saturate(1.08)";
-      case "speaking":  return "brightness(1.08)";
+      case "speaking":  return REGISTER_FILTERS[register] || REGISTER_FILTERS.neutral;
       case "idle":
       default:          return null;
     }
@@ -327,6 +341,9 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
     },
     setAnalyser(a: AnalyserNode | null) {
       analyser = a;
+    },
+    setRegister(r: AvatarRegister) {
+      register = r;
     },
   };
 }

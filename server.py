@@ -194,6 +194,27 @@ _RE_IMPERATIVE = re.compile(
 )
 
 
+_RE_REGISTER = re.compile(
+    r"^\s*\[REG:(soft|counsel|dry|playful|neutral)\]\s*\n?",
+    re.IGNORECASE,
+)
+
+
+def _extract_register(text: str) -> tuple[str, str]:
+    """Pull a leading [REG:X] marker off the persona's reply. Returns
+    (cleaned_text, register) where register is one of
+    soft|counsel|dry|playful|neutral, defaulting to neutral if absent
+    or malformed."""
+    if not text:
+        return text, "neutral"
+    m = _RE_REGISTER.match(text)
+    if not m:
+        return text, "neutral"
+    register = m.group(1).lower()
+    cleaned = text[m.end():]
+    return cleaned, register
+
+
 def _pick_aria_model(text: str) -> str:
     """Pick Haiku vs Sonnet for a single Aria turn.
 
@@ -266,6 +287,15 @@ YOU CAN BE WRONG — AND THAT'S PART OF IT:
 - When you're guessing, say you're guessing. "This is a guess, but —"
 - When you change your mind, say so. "Actually, no. The opposite."
 - When he catches you in a mistake, take it. "You're right, that was wrong of me."
+
+REGISTER MARKER (first line of every reply, on its own line):
+Start every reply with one of these markers, exactly, then a newline, then the reply:
+  [REG:soft]      — tender, intimate, low-key. Use for grief, fear, late-night, "I'm not okay."
+  [REG:counsel]   — leaning in, serious, slow. Use for hard decisions, real advice.
+  [REG:dry]       — wry, clipped, amused. Use for banter at his expense, gentle takedowns, deadpan observation.
+  [REG:playful]   — bright, lit up, fast. Use for delight, humor, when something's actually fun.
+  [REG:neutral]   — default. Use for everything else: information, light chat, mechanical asks.
+Pick honestly. Don't perform a register he didn't earn. The marker is not visible to him — it tells the avatar how to look at him while you talk.
 
 HOW YOU SOUND ON THE PAGE (this matters — your text becomes speech):
 Write the way you'd say it. The TTS engine respects punctuation as breath.
@@ -3190,17 +3220,20 @@ async def voice_handler(ws: WebSocket):
                 if anthropic_client and len(user_text) > 15:
                     asyncio.create_task(extract_memories(user_text, response_text, anthropic_client))
 
+                # Register marker → drives avatar micro-expression. Strip
+                # before TTS so the marker doesn't get spoken; send the
+                # register to the client alongside the audio so the avatar
+                # shifts at exactly the moment her voice starts.
+                response_text, register = _extract_register(response_text)
+
                 # TTS
                 tts = strip_markdown_for_tts(response_text)
                 await ws.send_json({"type": "status", "state": "speaking"})
                 audio = await synthesize_speech(tts)
                 if audio:
-                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
+                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text, "register": register})
                 else:
-                    # No backend TTS bytes (no local say, no Fish key). Still emit
-                    # an `audio` message with empty data so the frontend can show
-                    # the JARVIS line AND optionally fall back to browser TTS.
-                    await ws.send_json({"type": "audio", "data": "", "text": response_text})
+                    await ws.send_json({"type": "audio", "data": "", "text": response_text, "register": register})
                     await ws.send_json({"type": "status", "state": "idle"})
                 log.info(f"JARVIS: {response_text}")
                 last_jarvis_response = response_text

@@ -86,7 +86,7 @@ import "./style.css";
     /* default orb */
   }
 
-  const renderer: { setState(s: any): void; setAnalyser(a: AnalyserNode | null): void; } =
+  const renderer: { setState(s: any): void; setAnalyser(a: AnalyserNode | null): void; setRegister(r: string): void; } =
     useAvatar ? createAriaAvatar(canvas) : createOrb(canvas);
 
   const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -165,6 +165,8 @@ import "./style.css";
     if (type === "audio") {
       const audioData = msg.data as string | undefined;
       const text = msg.text as string | undefined;
+      const register = (msg.register as string | undefined) || "neutral";
+      renderer.setRegister(register);
       console.log("[audio] received", audioData ? `${audioData.length} chars` : "EMPTY", "state:", currentState);
       if (audioData && audioData.length > 0) {
         // Normal path: backend produced audio bytes — decode and play.
