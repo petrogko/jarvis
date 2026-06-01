@@ -62,6 +62,8 @@ from file_perms import harden_secrets_at_startup
 import claude_pool
 import audit_log
 import crisis_floor as _crisis_floor
+import idle_lock as _idle_lock_mod
+import secrets_redactor as _secrets_redactor
 from cwd_allowlist import assert_allowed_cwd
 import claude_runner
 
@@ -1653,6 +1655,85 @@ return windowList
     log.info("Context refresh thread started")
 
 
+_idle_lock_manager = _idle_lock_mod.IdleLockManager()
+
+
+def _idle_lock_get_config() -> tuple[float, bool, bool, "Optional[float]"]:
+    """Read idle-lock config from the vault per tick. Honors the advisor's
+    required fix #6: ``IDLE_LOCK_DISABLED`` is REFUSED when sealed
+    conversations exist (sealed detection lands with PR for 1A; for now
+    sealed_exists is always False but the wiring is here).
+    """
+    try:
+        raw_s = _vault_get("IDLE_LOCK_S", str(_idle_lock_mod.DEFAULT_IDLE_LOCK_S))
+        idle_lock_s = float(raw_s) if raw_s else _idle_lock_mod.DEFAULT_IDLE_LOCK_S
+    except (ValueError, TypeError):
+        idle_lock_s = _idle_lock_mod.DEFAULT_IDLE_LOCK_S
+    disabled_raw = (_vault_get("IDLE_LOCK_DISABLED", "0") or "0").strip().lower()
+    disabled = disabled_raw in ("1", "true", "yes")
+
+    # Sealed-conversation detection wires in when 1A lands. Until then:
+    sealed_exists = False
+    sealed_idle_lock_s = _idle_lock_mod.DEFAULT_IDLE_LOCK_S_SEALED
+
+    enabled = not disabled or sealed_exists  # advisor required fix #6
+    return idle_lock_s, enabled, sealed_exists, sealed_idle_lock_s
+
+
+async def _idle_lock_on_lock(audit_extras: dict) -> None:
+    """Lock the vault, close all WS clients with 4423, audit, wipe caches.
+
+    Order (advisor required fix #2): broadcast best-effort, THEN close (4423
+    is authoritative regardless of whether the JSON payload arrived).
+    """
+    global anthropic_client
+    # 1. Best-effort broadcast — fire and forget; clients must treat 4423
+    #    as authoritative even if the JSON never arrives.
+    try:
+        for ws in list(task_manager._websockets):
+            try:
+                await ws.send_json({"type": "vault_locked"})
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # 2. Close every connection with the custom close code.
+    try:
+        for ws in list(task_manager._websockets):
+            try:
+                await ws.close(code=_idle_lock_mod.WS_CLOSE_CODE)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # 3. Lock the vault.
+    try:
+        _vault_mod.lock()
+    except Exception:
+        log.exception("idle_lock: vault.lock() failed")
+    # 4. Wipe in-memory caches (advisor recommended fix). The API key in
+    #    anthropic_client's process memory is cleared; we rebuild on unlock.
+    anthropic_client = None
+    # 5. Audit. Single verb (`auto_lock`), single classifier (`had_ws`),
+    #    optional clock_jump — per advisor required fix #4.
+    try:
+        audit_log.record(
+            action="auto_lock",
+            source="idle_lock",
+            target="vault",
+            success=True,
+            **audit_extras,
+        )
+    except TypeError:
+        # audit_log.record may not accept **kwargs — fall back to fixed shape.
+        audit_log.record(
+            action="auto_lock",
+            source="idle_lock",
+            target="vault",
+            success=True,
+        )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global anthropic_client, cached_projects
@@ -1667,7 +1748,25 @@ async def lifespan(application: FastAPI):
     _refresh_context_sync()
     log.info("JARVIS server starting")
 
+    # Phase-1C idle auto-lock — background task.
+    idle_lock_task = asyncio.create_task(
+        _idle_lock_mod.run_idle_lock_loop(
+            manager=_idle_lock_manager,
+            get_config=_idle_lock_get_config,
+            get_ws_count=lambda: len(task_manager._websockets),
+            on_lock=_idle_lock_on_lock,
+        ),
+        name="idle_lock_loop",
+    )
+
     yield
+
+    # Graceful shutdown.
+    idle_lock_task.cancel()
+    try:
+        await idle_lock_task
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 app = FastAPI(title="JARVIS Server", version="0.1.0", lifespan=lifespan)
@@ -1736,6 +1835,9 @@ async def vault_locked_middleware(request, call_next):
         return await call_next(request)
     if _vault_mod.session() is None:
         return JSONResponse({"detail": "vault locked"}, status_code=423)
+    # Activity chokepoint #1: every protected HTTP request that passes auth
+    # counts as user activity for the idle-lock timer.
+    _idle_lock_manager.touch()
     return await call_next(request)
 
 
@@ -1799,6 +1901,8 @@ async def api_auth_unlock(body: _PassphraseBody):
     # loopback bypass, so the token is required even on localhost.
     from auth import load_or_create_token
     token = load_or_create_token()
+    # Activity chokepoint #2: successful unlock IS the start of activity.
+    _idle_lock_manager.touch()
     return {"ok": True, "token": token}
 
 
@@ -2462,6 +2566,11 @@ async def voice_handler(ws: WebSocket):
 
         while True:
             raw = await ws.receive_text()
+            # Activity chokepoint #3: every WS frame received from a client
+            # counts as activity. Per advisor required fix #1, this covers
+            # text and binary alike; the current protocol is text-only but
+            # the manager-level touch() is frame-type-agnostic.
+            _idle_lock_manager.touch()
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -2633,6 +2742,10 @@ async def voice_handler(ws: WebSocket):
 
                 # ── CHAT MODE: fast keyword detection + Haiku ──
                 else:
+                    # Read SECRETS_MODE once per turn so both the LLM-path and
+                    # the action-handler-path see the same setting.
+                    secrets_mode = (_vault_get("SECRETS_MODE", "warn") or "warn").strip().lower()
+
                     # ── Crisis floor — deterministic pre-LLM safety filter ──
                     # Per docs/superpowers/specs/2026-05-30-crisis-floor-design.md.
                     # MUST run BEFORE generate_response so even a jailbroken
@@ -2733,6 +2846,20 @@ async def voice_handler(ws: WebSocket):
                         if not anthropic_client:
                             response_text = "API key not configured."
                         else:
+                            # Secrets redactor — pre-LLM filter on the user's
+                            # text (per spec 2026-05-30-secrets-redactor-design
+                            # §1.4: same redacted string the LLM sees is what
+                            # we persist). OFF mode is pass-through.
+                            if secrets_mode in ("warn", "strict"):
+                                redacted_user, user_dets = _secrets_redactor.redact(user_text)
+                                for d in user_dets:
+                                    audit_log.record(
+                                        action="secret_detected",
+                                        source="user_text",
+                                        target=d.category,
+                                        success=True,
+                                    )
+                                user_text = redacted_user
                             response_text = await generate_response(
                                 user_text, anthropic_client, task_manager,
                                 cached_projects, history,
@@ -2965,6 +3092,21 @@ async def voice_handler(ws: WebSocket):
                                             _lookup_and_report("web-search", _do_web_search, ws, history=history, voice_state=voice_state)
                                         )
 
+                # Secrets redactor — second pass on the assistant reply
+                # (Aria can echo a secret back). Per advisor required fix #1
+                # this runs AFTER extract_action (already invoked at line ~2521),
+                # so action tags survive intact. Same SECRETS_MODE as above.
+                if secrets_mode in ("warn", "strict"):
+                    redacted_assistant, asst_dets = _secrets_redactor.redact(response_text)
+                    for d in asst_dets:
+                        audit_log.record(
+                            action="secret_detected",
+                            source="assistant_text",
+                            target=d.category,
+                            success=True,
+                        )
+                    response_text = redacted_assistant
+
                 # Update history
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": response_text})
@@ -3062,6 +3204,8 @@ class PreferencesUpdate(BaseModel):
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
                "CRISIS_FLOOR_MODE", "CRISIS_FLOOR_LOCALE",
+               "IDLE_LOCK_S", "IDLE_LOCK_DISABLED",
+               "SECRETS_MODE",
                "TTS_PROVIDER", "TTS_VOICE", "TTS_ENGINE", "TTS_PIPER_VOICE",
                "STT_PROVIDER", "SIDECAR_URL",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
