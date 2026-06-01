@@ -58,6 +58,8 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
   let openness = 0;
   let width = 0.5;
   let pulse = 0;          // legacy amplitude — still used for filter boost
+  let pulsePrev = 0;      // previous frame's pulse — used to detect amplitude dips
+  let inDip = false;      // currently below the "silence pocket" threshold
   let blinkProgress = 1;  // 0..1; 0 = eyes closed mid-blink, 1 = open
   let nextBlinkAt = performance.now() + 3000 + Math.random() * 3000;
 
@@ -196,6 +198,7 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
     // Asymmetric smoothing: attack fast, release slow.
     openness = opTarget > openness ? openness + (opTarget - openness) * 0.5 : openness * 0.85;
     width = width + (wTarget - width) * 0.3;
+    pulsePrev = pulse;
     pulse = pTarget > pulse ? pulse + (pTarget - pulse) * 0.5 : pulse * 0.85;
   }
 
@@ -231,14 +234,28 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
   }
 
   function updateBlink(prev: number, now: number): number {
+    // While speaking, detect amplitude dips (silence pockets at word/phrase
+    // boundaries) and probabilistically trigger a blink there. People blink
+    // more while talking, clustered around pause moments — this approximates
+    // that without phoneme timestamps. Baseline interval stays 4–7s for
+    // idle/listening/thinking.
+    if (state === "speaking" && prev >= 1) {
+      const justDipped = pulsePrev > 0.12 && pulse < 0.05 && !inDip;
+      inDip = pulse < 0.05;
+      // Only consider dip-triggered blinks if we haven't blinked recently
+      // (avoid stutter — minimum 800ms since the last blink scheduled).
+      const sinceLastSchedule = nextBlinkAt - now;
+      if (justDipped && sinceLastSchedule > 5000 && Math.random() < 0.35) {
+        nextBlinkAt = now + 60 + Math.random() * 120;
+      }
+    }
+
     // The eyes-closed phase is short (~120ms); the opening eases.
     if (now >= nextBlinkAt) {
-      // Start a blink.
       nextBlinkAt = now + 4000 + Math.random() * 3000;
       return 0;
     }
     if (prev < 1) {
-      // Eyes are mid-blink; ease toward open.
       return Math.min(1, prev + 0.07);
     }
     return 1;

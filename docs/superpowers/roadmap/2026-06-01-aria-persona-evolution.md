@@ -54,7 +54,7 @@ The current photo + audio amplitude pulse is the floor. Phase 2 of the avatar:
 | 4.1b | Phoneme-accurate lip-sync via Piper phoneme timestamps | follow-up PR (substantial — sidecar piper engine changes + frontend viseme overlay) |
 | 4.2 | Eye-tracking / gaze direction | follow-up |
 | 4.3 | Micro-expressions tied to mode (subtle smile, neutral attention) | follow-up |
-| 4.4 | Better blink timing (syllable-boundary aware) | follow-up |
+| 4.4 | Better blink timing (silence-pocket-triggered while speaking) | done (PR #37) |
 
 ### 5. Voice texture
 
