@@ -3224,6 +3224,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
+FRONTEND_PUBLIC = Path(__file__).parent / "frontend" / "public"
 
 if FRONTEND_DIST.exists():
     @app.get("/")
@@ -3231,6 +3232,22 @@ if FRONTEND_DIST.exists():
         return FileResponse(str(FRONTEND_DIST / "index.html"))
 
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
+    # Aria avatar image — Vite copies frontend/public/* into dist/ at top-level
+    # so a built bundle has /aria-avatar.png at the dist root. Serve it as an
+    # explicit route so it's accessible regardless of vault-lock state (the
+    # image is a public visual asset; no secrets revealed by its existence).
+    _avatar_dist = FRONTEND_DIST / "aria-avatar.png"
+    _avatar_public = FRONTEND_PUBLIC / "aria-avatar.png"
+
+    @app.get("/aria-avatar.png")
+    async def serve_avatar():
+        # Prefer the built copy under dist/; fall back to public/ if the
+        # bundle wasn't rebuilt after dropping the image in.
+        for path in (_avatar_dist, _avatar_public):
+            if path.exists():
+                return FileResponse(str(path), media_type="image/png")
+        return JSONResponse({"detail": "avatar not bundled"}, status_code=404)
 
 
 # ---------------------------------------------------------------------------
