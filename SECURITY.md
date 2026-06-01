@@ -99,6 +99,20 @@ Phase-1 hardening per `docs/superpowers/specs/2026-05-30-idle-auto-lock-design.m
 **Audit log** — single verb `auto_lock`. Single behavioral classifier `had_ws: bool`. Optional `clock_jump: true` when `idle_for > IDLE_LOCK_S + 300` (macOS sleep / lid-close detection — the timer can't fire while suspended, so it fires late on wake). The `idle` vs `wandered_ws` distinction is intentionally NOT recorded — it was a habit side-channel that revealed user-presence patterns over time.
 
 **Known limitation:** while the macOS host is suspended, the container's event loop is too — the timer cannot fire until wake. Worst-case exposure window is `IDLE_LOCK_S + 60 s + suspend_duration`. The `clock_jump` audit line surfaces the gap to an operator reviewing the log.
+## Data-handling: secrets redaction
+
+Phase-1 hardening per `docs/superpowers/specs/2026-05-30-secrets-redactor-design.md`. A regex+validator filter (`secrets_redactor.py`) runs on every user turn pre-LLM and on every assistant reply pre-persistence. The same redacted string is what the LLM sees AND what we persist — the "LLM-input == persisted" invariant is load-bearing.
+
+**Categories:** SSN (with SSA issuance-rule validator), credit cards (Luhn-validated), ABA routing (mod-10), API keys (Anthropic / OpenAI / Tavily / GitHub PAT / Slack / AWS / Stripe / webhook-secrets), JWT (three-segment + `eyJ` heuristic), PEM blocks, OpenSSH private keys, spoken `ssh-rsa` public keys, bcrypt hashes, IBAN (mod-97), spoken passwords ("the password is X" / "use X as the password/PIN" / "type X" / "enter X" / "passcode is" / "PIN colon").
+
+**Modes:** vault key `SECRETS_MODE` ∈ {`off`, `warn`, `strict`}, default `warn`. `warn` and `strict` currently differ only in voice-UX (deferred); both redact pre-persistence and pre-LLM. `off` is pass-through.
+
+**Audit log:** one `secret_detected` line per detection, recording only `(source=user_text|assistant_text, target=category)`. The matched bytes NEVER appear in any log — including exception paths (each detector is wrapped in `try/except` that logs only the exception class name).
+
+**Defense-in-depth:** hard 4 KiB input cap + 50 ms per-call wall-clock guard prevent ReDoS amplification on the catastrophic-backtrack-candidate patterns (cards, IBAN). `extract_action` runs **before** redaction on assistant replies so action tags survive intact.
+
+**Token rendering:** within the same turn, matches are replaced with `[REDACTED:<category>]` so the LLM has enough context to reason. On resume-load (PR #25's `load_recent_messages`), `collapse_for_resume()` strips category labels and groups consecutive redactions — defends against inferential aggregation ("four `[REDACTED:ssn]` → user has many SSNs to discuss").
+
 ## Sidecar /spawn — claude on the host for JARVIS-in-Docker
 
 The host sidecar's new `POST /spawn` endpoint runs `claude -p --dangerously-skip-permissions` on the macOS host. This unblocks `[ACTION:BUILD]`, `[ACTION:RESEARCH]`, and `[ACTION:PROMPT_PROJECT]` from the JARVIS Docker container (no `claude` CLI in the container; no host shell). See `docs/superpowers/specs/2026-05-29-sidecar-spawn-design.md` for the full design + the security-advisor GO-WITH-FIXES ruleset.
