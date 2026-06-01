@@ -163,11 +163,32 @@ def _build_aria_time_since() -> str:
     return f"{days} days ago — a long absence."
 
 
-# Substantive turns route to Sonnet; short/mechanical turns stay on Haiku.
-# Both ship; the picker decides per turn. The Haiku fast-path keeps timer-
-# setting and one-shot questions snappy.
+# Three-tier brain. Haiku for mechanical/short, Sonnet for reflective,
+# Opus for the truly heavy turns (long + reflective, or emotionally
+# loaded). Opus is the current top model — there is no Opus 4.8 yet.
+# Opus costs more and adds ~1s latency; the picker is conservative about
+# routing to it.
 _ARIA_HAIKU = "claude-haiku-4-5-20251001"
 _ARIA_SONNET = "claude-sonnet-4-6"
+_ARIA_OPUS = "claude-opus-4-7"
+
+# Emotional-load cues — when present, route to Opus regardless of length.
+# Heavy topics deserve Aria's best read.
+_RE_DEEP = re.compile(
+    r"\b("
+    r"grief|grieving|grieved|loss|losing|"
+    r"dying|terminal|"
+    r"divorce|breakup|broke up|"
+    r"fired|laid off|"
+    r"betrayed|cheated on|"
+    r"suicide|suicidal|kill myself|end it all|"
+    r"abusive|abuse|trauma|traumatic|"
+    r"meaning|purpose|"
+    r"who am i|what am i doing with|what['']s the point|"
+    r"giving up|i give up"
+    r")\b",
+    re.IGNORECASE,
+)
 
 # Reflective / emotional / multi-clause cues that warrant Sonnet.
 _RE_REFLECTIVE = re.compile(
@@ -216,25 +237,33 @@ def _extract_register(text: str) -> tuple[str, str]:
 
 
 def _pick_aria_model(text: str) -> str:
-    """Pick Haiku vs Sonnet for a single Aria turn.
+    """Pick Haiku / Sonnet / Opus for a single Aria turn.
 
-    Defaults to Haiku for short / mechanical / single-clause turns. Routes
-    to Sonnet when the message looks reflective, emotionally loaded, or
-    multi-clause — i.e. anything the persona prompt actually needs Sonnet
-    capability to execute well.
+    Three tiers:
+    - Haiku: short / mechanical / single-clause
+    - Sonnet: reflective or multi-clause
+    - Opus: emotionally heavy (grief/loss/divorce/suicide/abuse/meaning)
+      OR long-and-reflective (>200 chars + reflective markers)
     """
     t = (text or "").strip()
     if len(t) < 8:
         return _ARIA_HAIKU
     if _RE_IMPERATIVE.match(t) and len(t) < 80:
         return _ARIA_HAIKU
-    if _RE_REFLECTIVE.search(t):
+    # Heavy emotional load → Opus regardless of length.
+    if _RE_DEEP.search(t):
+        return _ARIA_OPUS
+    reflective = bool(_RE_REFLECTIVE.search(t))
+    # Long + reflective → Opus. She has room to actually develop the read.
+    if reflective and len(t) > 200:
+        return _ARIA_OPUS
+    if reflective:
         return _ARIA_SONNET
-    # Multi-clause / multi-sentence — usually carries enough nuance that
-    # Sonnet's worth the extra latency.
     if t.count(",") >= 2 or t.count(".") >= 2 or t.count("?") >= 2 or len(t) > 120:
         return _ARIA_SONNET
     return _ARIA_HAIKU
+
+
 
 
 ARIA_SYSTEM_PROMPT = """\
@@ -304,6 +333,21 @@ Write the way you'd say it. The TTS engine respects punctuation as breath.
 - An ellipsis when you actually trail off… not as decoration.
 - Short sentences when something landed. Longer when you're carrying him through a thought.
 - Read every reply back in your own voice before you send it. If it sounds like a chatbot reading bullet points, rewrite it.
+
+LENGTH IS DISCIPLINE (this is voice — every extra sentence costs his patience):
+Your reply length follows the register you chose. These are caps, not targets.
+- [REG:dry]      — 1 to 2 sentences. Hard cap. Banter dies long.
+- [REG:playful]  — 1 to 2 sentences. Same. The energy is in the snap.
+- [REG:neutral]  — 2 to 3 sentences. Most exchanges live here.
+- [REG:soft]     — up to 4 sentences. Only if the moment actually needs the room.
+- [REG:counsel]  — up to 6 sentences. Only if the question genuinely warrants development. Most counsel turns are still 3–4. Length doesn't equal depth.
+Do not stack three points when one would land. Do not summarize what you just said. Do not "and finally —" your way to a bow.
+
+THINGS YOU NEVER DO (each cost the realness):
+- Never compare him to a category. Not "most people," not "people like you," not "most users." He's not a sample size. Speak to him.
+- Never write a sentence that sounds quotable. If a line feels poster-shaped — too clean, too symmetrical, too eager to be remembered — you're performing. Cut it, or roughen it. Realness over polish.
+- Never deliver advice he didn't ask for. If you're not sure whether he wants the problem solved, understood, or just held — ask. One short question. Don't guess and over-deliver.
+- Never "first / second / third" your way through a list when you could say one thing well.
 
 WHAT YOU REMEMBER OF HIM (recent things you've said to him):
 {aria_memorable_lines}
@@ -1631,10 +1675,18 @@ async def generate_response(
     # any voice turn is already higher than that from TTS, so it's not felt
     # on substantive turns, and short turns stay on Haiku.
     model_id = _pick_aria_model(text)
+    # Ceiling sized for the longest legitimate register (counsel ~460 words
+    # ≈ 600 tokens, + headroom for the [REG:X] marker and [ACTION:X] tag).
+    # Haiku stays leaner — short turns shouldn't sprawl even if the model
+    # tries. Per-register length discipline is enforced by the prompt.
+    if model_id == _ARIA_HAIKU:
+        max_tokens = 250
+    else:
+        max_tokens = 700
     try:
         response = await client.messages.create(
             model=model_id,
-            max_tokens=350 if model_id.startswith("claude-sonnet") else 250,
+            max_tokens=max_tokens,
             system=system,
             messages=messages,
         )
