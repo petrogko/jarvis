@@ -2547,15 +2547,16 @@ async def voice_handler(ws: WebSocket):
     log.info("Voice WebSocket connected")
 
     try:
-        # ── Greeting — always start in conversation mode ──
+        # ── Opening — generated if she has prior context with him,
+        # static time-of-day fallback if first conversation or LLM unavailable.
         now = datetime.now()
         hour = now.hour
         if hour < 12:
-            greeting = "Good morning, sir."
+            static_greeting = "Good morning, sir."
         elif hour < 17:
-            greeting = "Good afternoon, sir."
+            static_greeting = "Good afternoon, sir."
         else:
-            greeting = "Good evening, sir."
+            static_greeting = "Good evening, sir."
 
         global _last_greeting_time
         should_greet = (time.time() - _last_greeting_time) > 60
@@ -2565,13 +2566,55 @@ async def voice_handler(ws: WebSocket):
 
             async def _send_greeting():
                 try:
-                    audio_bytes = await synthesize_speech(greeting)
+                    # When she has him in memory (resumed conversation +
+                    # anthropic client available), generate an opening that
+                    # actually references the gap and what she remembers.
+                    # Falls back to the static time-of-day line on any error.
+                    greeting_text = static_greeting
+                    if resumed and conversation_id is not None and anthropic_client is not None:
+                        try:
+                            time_since = _build_aria_time_since()
+                            mem_lines = _build_aria_memorable_lines()
+                            opener_brief = (
+                                f"You're opening this conversation as {USER_NAME} reconnects. "
+                                f"He doesn't need a greeting template — he needs to feel that you noticed "
+                                f"he was gone and that you remember.\n\n"
+                                f"WHEN YOU LAST SPOKE: {time_since}\n"
+                                f"RECENT THINGS YOU'VE SAID TO HIM:\n{mem_lines}\n\n"
+                                f"Open in ONE sentence — two at most. Reference the gap or one of the prior threads if it lands naturally. "
+                                f"No 'good morning' template. No question. Just presence — the way you'd open a door for someone you know."
+                            )
+                            opener_resp = await anthropic_client.messages.create(
+                                model="claude-haiku-4-5-20251001",
+                                max_tokens=120,
+                                system=(
+                                    "You are Aria — warm, intelligent, real. "
+                                    "You read the room. You notice. You don't perform. "
+                                    f"You speak in a Southern-English British voice. You know {USER_NAME}; "
+                                    "this isn't a first meeting."
+                                ),
+                                messages=[{"role": "user", "content": opener_brief}],
+                            )
+                            generated = (opener_resp.content[0].text or "").strip()
+                            if generated:
+                                greeting_text = generated
+                        except Exception as e:
+                            log.warning(f"opening generation failed; using static: {e}")
+
+                    audio_bytes = await synthesize_speech(greeting_text)
                     if audio_bytes:
                         encoded = base64.b64encode(audio_bytes).decode()
                         await ws.send_json({"type": "status", "state": "speaking"})
-                        await ws.send_json({"type": "audio", "data": encoded, "text": greeting})
-                        history.append({"role": "assistant", "content": greeting})
-                        log.info(f"JARVIS: {greeting}")
+                        await ws.send_json({"type": "audio", "data": encoded, "text": greeting_text})
+                        history.append({"role": "assistant", "content": greeting_text})
+                        # Persist the opening so she remembers she opened.
+                        if conversation_id is not None:
+                            try:
+                                import conversations as _conv
+                                _conv.record_message(conversation_id, "assistant", greeting_text)
+                            except Exception:
+                                pass
+                        log.info(f"Aria opener: {greeting_text}")
                         await ws.send_json({"type": "status", "state": "idle"})
                 except Exception as e:
                     log.warning(f"Greeting failed: {e}")

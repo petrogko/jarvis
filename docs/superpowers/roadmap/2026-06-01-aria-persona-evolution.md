@@ -17,7 +17,7 @@ Right now she's a witty British secretary who could be anyone's. The persistence
 |---|---|---|
 | 1.1 | Address user by name (use `USER_NAME` vault key), alternate with "sir" | this PR |
 | 1.2 | Inject memorable past lines into system prompt (recent conversations) | this PR |
-| 1.3 | Opening turn on WS connect — observation, not silent waiting | this PR |
+| 1.3 | Opening turn on WS connect — observation, not silent waiting | done (PR #34) |
 | 1.4 | Time-since-last-conversation context (`"you were here three hours ago"`) | this PR |
 | 1.5 | Recurring-thread surfacing — track which topics keep coming up | follow-up (needs embeddings) |
 | 1.6 | Reference specific past conversations by content | this PR |
