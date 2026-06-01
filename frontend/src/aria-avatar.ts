@@ -11,7 +11,10 @@
  *   killing conversational pace) or a third-party API (D-ID / HeyGen —
  *   violates the local-only counsel posture).
  * - What this DOES do, in real time, in the browser:
- *   - Audio-amplitude-driven subtle mouth-region scale + opacity pulse.
+ *   - Formant-driven mouth shape: F1-band energy controls openness
+ *     (jaw drop), F2/(F1+F2) ratio controls width (lip spread). Loosely
+ *     tracks vowel shapes — "ah" pulls tall, "ee" pulls wide, "oo" stays
+ *     small and rounded — without needing phoneme timestamps.
  *   - Idle blink loop (every 4–7s).
  *   - State-driven brightness / saturation shifts (thinking dims slightly,
  *     listening warms slightly).
@@ -45,9 +48,16 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
 
   let state: AvatarState = "idle";
   let analyser: AnalyserNode | null = null;
-  const fftBuffer = new Uint8Array(256);
+  // 512 bins covers ~12 kHz at 48 kHz sample rate / 2048 fftSize — enough
+  // to bracket F1 (300–800 Hz) and F2 (800–2500 Hz) speech formants.
+  const fftBuffer = new Uint8Array(512);
 
-  let pulse = 0;          // smoothed audio amplitude in [0, 1]
+  // Mouth deformation is driven by two smoothed signals:
+  //   openness — F1-band energy (mouth open vs closed; "ah" vs silence)
+  //   width    — F2/(F1+F2) ratio (mouth wide vs round; "ee" vs "oo")
+  let openness = 0;
+  let width = 0.5;
+  let pulse = 0;          // legacy amplitude — still used for filter boost
   let blinkProgress = 1;  // 0..1; 0 = eyes closed mid-blink, 1 = open
   let nextBlinkAt = performance.now() + 3000 + Math.random() * 3000;
 
@@ -107,14 +117,15 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
       ctx!.drawImage(img, dx, dy, drawW, drawH);
       ctx!.restore();
 
-      // Audio amplitude → pulse for the mouth region.
-      pulse = updatePulse(pulse);
+      // Audio spectrum → formant-driven mouth shape.
+      updateFormants();
 
-      // Mouth-region overlay — subtle scale + brightness shift centered on
-      // the mouth. Done by re-drawing JUST the mouth rect with a scale
-      // transform anchored at the mouth center.
+      // Mouth-region overlay — non-uniform scale anchored at the mouth
+      // center. openness lifts sy (mouth taller), width lifts sx (mouth
+      // wider). The combination loosely tracks vowel shapes without
+      // needing phoneme timestamps.
       if (state === "speaking" && pulse > 0.01) {
-        drawMouthPulse(ctx!, img, dx, dy, drawW, drawH, pulse);
+        drawMouthPulse(ctx!, img, dx, dy, drawW, drawH, openness, width, pulse);
       }
 
       // Blink — draw a thin black horizontal band over the eyes when the
@@ -151,28 +162,48 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
     }
   }
 
-  function updatePulse(prev: number): number {
+  function updateFormants() {
     if (!analyser) {
-      // Decay toward zero when no audio source.
-      return prev * 0.9;
+      openness *= 0.9;
+      width = width * 0.9 + 0.5 * 0.1;
+      pulse *= 0.9;
+      return;
     }
     analyser.getByteFrequencyData(fftBuffer);
-    // Use the low-mid band — speech energy lives there.
-    let sum = 0;
-    const lo = 8;
-    const hi = 64;
-    for (let i = lo; i < hi; i++) sum += fftBuffer[i];
-    const avg = sum / (hi - lo) / 255;  // 0..1
-    // Smooth: attack fast, release slow — feels alive.
-    const target = Math.min(1, avg * 1.4);
-    return target > prev ? prev + (target - prev) * 0.5 : prev * 0.85;
+    // Bin → frequency: i * sampleRate / fftSize. With 48 kHz / 2048,
+    // binWidth ≈ 23.4 Hz. Bands:
+    //   F1 ≈ 300–900 Hz  → bins 13..39
+    //   F2 ≈ 900–2500 Hz → bins 39..107
+    // (Slightly broadened from canonical 800Hz divider to capture both
+    //  male and female formant ranges robustly.)
+    let e1 = 0, e2 = 0, total = 0;
+    for (let i = 13; i < 39; i++) e1 += fftBuffer[i];
+    for (let i = 39; i < 107; i++) e2 += fftBuffer[i];
+    for (let i = 8; i < 107; i++) total += fftBuffer[i];
+    const e1Avg = e1 / (39 - 13) / 255;
+    const e2Avg = e2 / (107 - 39) / 255;
+    const totalAvg = total / (107 - 8) / 255;
+
+    const opTarget = Math.min(1, e1Avg * 1.6);
+    // F2/(F1+F2) — high when "ee/sh", low when "oo/aa-rounded".
+    const ratio = (e1Avg + e2Avg) > 0.01
+      ? e2Avg / (e1Avg + e2Avg)
+      : 0.5;
+    // Map [0.3, 0.7] → [0, 1] roughly; clamp.
+    const wTarget = Math.max(0, Math.min(1, (ratio - 0.3) / 0.4));
+    const pTarget = Math.min(1, totalAvg * 1.4);
+
+    // Asymmetric smoothing: attack fast, release slow.
+    openness = opTarget > openness ? openness + (opTarget - openness) * 0.5 : openness * 0.85;
+    width = width + (wTarget - width) * 0.3;
+    pulse = pTarget > pulse ? pulse + (pTarget - pulse) * 0.5 : pulse * 0.85;
   }
 
   function drawMouthPulse(
     c: CanvasRenderingContext2D,
     image: HTMLImageElement,
     dx: number, dy: number, drawW: number, drawH: number,
-    p: number,
+    op: number, wd: number, p: number,
   ) {
     const cx = dx + drawW * MOUTH_REGION.cx;
     const cy = dy + drawH * MOUTH_REGION.cy;
@@ -180,21 +211,21 @@ export function createAriaAvatar(canvas: HTMLCanvasElement): AriaAvatar {
     const ry = drawH * MOUTH_REGION.ry;
 
     c.save();
-    // Clip to an ellipse around the mouth so the scale doesn't bulge the
-    // chin or nose.
+    // Wider clip so the asymmetric scale (especially sx) doesn't reveal a
+    // seam at the cheek edges.
     c.beginPath();
-    c.ellipse(cx, cy, rx * 1.15, ry * 1.4, 0, 0, Math.PI * 2);
+    c.ellipse(cx, cy, rx * 1.35, ry * 1.6, 0, 0, Math.PI * 2);
     c.clip();
 
-    // Scale around the mouth center proportional to amplitude.
-    const s = 1 + p * 0.08;  // up to ~8% bigger
+    // Non-uniform scale: openness drives sy (jaw drop), width drives sx
+    // (lip spread). wd is centered at 0.5 — neutral mouth.
+    const sx = 1 + op * 0.04 + (wd - 0.5) * 0.06;
+    const sy = 1 + op * 0.12 - (wd - 0.5) * 0.03;
     c.translate(cx, cy);
-    c.scale(s, s);
+    c.scale(sx, sy);
     c.translate(-cx, -cy);
 
-    // Subtle brightness boost on the mouth area only.
-    c.filter = `brightness(${1 + p * 0.12})`;
-
+    c.filter = `brightness(${1 + p * 0.10})`;
     c.drawImage(image, dx, dy, drawW, drawH);
     c.restore();
   }

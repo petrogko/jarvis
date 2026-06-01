@@ -50,7 +50,8 @@ The current photo + audio amplitude pulse is the floor. Phase 2 of the avatar:
 
 | ID | Item | Status |
 |---|---|---|
-| 4.1 | Phoneme-accurate lip-sync via Piper phoneme output | follow-up PR (substantial — sidecar piper engine changes + frontend viseme overlay) |
+| 4.1a | Formant-driven mouth shape (F1 openness + F2 width) — browser-only, no sidecar changes | done (PR #35) |
+| 4.1b | Phoneme-accurate lip-sync via Piper phoneme timestamps | follow-up PR (substantial — sidecar piper engine changes + frontend viseme overlay) |
 | 4.2 | Eye-tracking / gaze direction | follow-up |
 | 4.3 | Micro-expressions tied to mode (subtle smile, neutral attention) | follow-up |
 | 4.4 | Better blink timing (syllable-boundary aware) | follow-up |
