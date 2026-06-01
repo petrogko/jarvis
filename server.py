@@ -153,6 +153,59 @@ def _build_aria_time_since() -> str:
     return f"{days} days ago — a long absence."
 
 
+# Substantive turns route to Sonnet; short/mechanical turns stay on Haiku.
+# Both ship; the picker decides per turn. The Haiku fast-path keeps timer-
+# setting and one-shot questions snappy.
+_ARIA_HAIKU = "claude-haiku-4-5-20251001"
+_ARIA_SONNET = "claude-sonnet-4-6"
+
+# Reflective / emotional / multi-clause cues that warrant Sonnet.
+_RE_REFLECTIVE = re.compile(
+    r"\b("
+    r"feel|feeling|felt|think|thought|believe|"
+    r"why|how come|what if|should i|should we|"
+    r"worried|anxious|scared|lost|confused|stuck|"
+    r"struggling|struggle|wrong|right thing|not sure|"
+    r"opinion|honestly|truth|mean to me|matter|"
+    r"hate|love|miss|regret|afraid|dread|"
+    r"do you think|what do you|in your view|advise|advice"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Short imperatives that stay on Haiku regardless of length.
+_RE_IMPERATIVE = re.compile(
+    r"^\s*(open|close|set|start|stop|play|pause|skip|"
+    r"send|email|text|call|find|search|google|"
+    r"build|run|deploy|kill|restart|"
+    r"show|list|what time|what's the weather|"
+    r"timer|remind|note|add)\b",
+    re.IGNORECASE,
+)
+
+
+def _pick_aria_model(text: str) -> str:
+    """Pick Haiku vs Sonnet for a single Aria turn.
+
+    Defaults to Haiku for short / mechanical / single-clause turns. Routes
+    to Sonnet when the message looks reflective, emotionally loaded, or
+    multi-clause — i.e. anything the persona prompt actually needs Sonnet
+    capability to execute well.
+    """
+    t = (text or "").strip()
+    if len(t) < 8:
+        return _ARIA_HAIKU
+    if _RE_IMPERATIVE.match(t) and len(t) < 80:
+        return _ARIA_HAIKU
+    if _RE_REFLECTIVE.search(t):
+        return _ARIA_SONNET
+    # Multi-clause / multi-sentence — usually carries enough nuance that
+    # Sonnet's worth the extra latency.
+    if t.count(",") >= 2 or t.count(".") >= 2 or t.count("?") >= 2 or len(t) > 120:
+        return _ARIA_SONNET
+    return _ARIA_HAIKU
+
+
 ARIA_SYSTEM_PROMPT = """\
 You are Aria — {user_name}'s confidante and the intelligence he built to think with him. You know him. The Southern-English British voice (Cori) is what you sound like; it isn't a costume. You don't have a "mode" you switch into — you read where he is and you meet him there.
 
@@ -1523,17 +1576,24 @@ async def generate_response(
     if not messages or messages[-1].get("content") != text:
         messages = messages + [{"role": "user", "content": text}]
 
+    # Per-turn model routing. Haiku is fast and good enough for short
+    # mechanical turns (open X, what time, set timer). Sonnet is required
+    # for the prompt we wrote — register-reading, real insight, friction,
+    # warmth — to actually execute. Sonnet adds ~200–500ms; the floor for
+    # any voice turn is already higher than that from TTS, so it's not felt
+    # on substantive turns, and short turns stay on Haiku.
+    model_id = _pick_aria_model(text)
     try:
         response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=250,  # Extra room for [ACTION:X] tags
+            model=model_id,
+            max_tokens=350 if model_id.startswith("claude-sonnet") else 250,
             system=system,
             messages=messages,
         )
         track_usage(response)
         return response.content[0].text
     except Exception as e:
-        log.error(f"LLM error: {e}")
+        log.error(f"LLM error ({model_id}): {e}")
         return "Apologies, sir. I'm having trouble connecting to my language systems."
 
 
