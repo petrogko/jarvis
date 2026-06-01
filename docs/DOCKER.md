@@ -145,6 +145,12 @@ The default JARVIS-in-Docker setup uses **Fish Audio** for TTS and **Chrome Web 
 
 After this, voice audio and JARVIS's response text never leave the Mac.
 
+### Sidecar also unlocks dispatches (`/spawn`)
+
+When the sidecar is installed, `claude_runner` auto-detects that JARVIS is running in Docker (via `/.dockerenv`) and routes `[ACTION:BUILD]`, `[ACTION:RESEARCH]`, and `[ACTION:PROMPT_PROJECT]` through `POST /spawn` on the sidecar — `claude` runs on your Mac with the requested workdir, output is streamed back to JARVIS. Without the sidecar, these dispatches silently fail from inside Docker because the container has no `claude` CLI. See `SECURITY.md "Sidecar /spawn"` for the workdir allowlist and other guards.
+
+Override the auto-detect with `JARVIS_CLAUDE_RUNNER=direct` (host install) or `docker` (sandboxed-claude). Default in Docker is `sidecar`.
+
 ### Uninstall
 
 ALWAYS run `./host-sidecar/teardown.sh` BEFORE `docker compose -p jarvis down -v` to cleanly unload the launchctl service.

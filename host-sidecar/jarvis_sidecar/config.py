@@ -57,3 +57,19 @@ PIPER_MAX_TEXT_CHARS: Final[int] = 2000
 
 # Multipart upload cap for /stt — defends against resource exhaustion.
 STT_MAX_BYTES: Final[int] = 5 * 1024 * 1024  # 5 MiB
+
+# /spawn — claude -p subprocess on the host. See
+# docs/superpowers/specs/2026-05-29-sidecar-spawn-design.md.
+PROMPT_MAX_BYTES: Final[int] = 64 * 1024            # 64 KiB
+OUTPUT_MAX_BYTES: Final[int] = 1 * 1024 * 1024      # 1 MiB soft cap; mark truncated
+OUTPUT_HARD_CAP_BYTES: Final[int] = 4 * 1024 * 1024  # 4 MiB circuit breaker; kill group
+SPAWN_MAX_CONCURRENT: Final[int] = 3
+SPAWN_MAX_PER_MINUTE: Final[int] = 10               # rolling 60s window
+SPAWN_DEFAULT_TIMEOUT_S: Final[float] = 300.0
+SPAWN_MIN_TIMEOUT_S: Final[float] = 60.0
+SPAWN_MAX_TIMEOUT_S: Final[float] = 1800.0
+SESSION_TTL_S: Final[float] = 300.0                 # finished sessions retained
+
+# Audit log destination — single file, JSON lines.
+def audit_log_path() -> Path:
+    return Path.home() / "Library" / "Logs" / "jarvis-sidecar.log"
