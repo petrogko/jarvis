@@ -167,6 +167,7 @@ import "./style.css";
       const text = msg.text as string | undefined;
       const register = (msg.register as string | undefined) || "neutral";
       renderer.setRegister(register);
+      audioPlayer.setRegister(register);
       console.log("[audio] received", audioData ? `${audioData.length} chars` : "EMPTY", "state:", currentState);
       if (audioData && audioData.length > 0) {
         // Normal path: backend produced audio bytes — decode and play.

@@ -62,8 +62,9 @@ Cori is good but the same Cori for everything. Per-mode voice variants would let
 
 | ID | Item | Status |
 |---|---|---|
-| 5.1 | Audio post-processing (compression, EQ shifts) per mode | follow-up PR |
-| 5.2 | Piper SSML-equivalent control (rate, pitch) per mode | follow-up PR |
+| 5.1 | Baseline warmth chain (highShelf + compressor) | done (PR #36) |
+| 5.2 | Per-register EQ + compression presets (browser-side, smooth ramps) | done (PR #41) |
+| 5.3 | Piper SSML-equivalent control (rate, pitch) per mode | follow-up PR |
 | 5.3 | Alternate Piper voice models for different modes | follow-up |
 
 ### 6. Persona-prompt sharpening
