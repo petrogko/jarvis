@@ -3001,7 +3001,7 @@ class PreferencesUpdate(BaseModel):
 async def api_settings_keys(body: KeyUpdate):
     allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID",
                "TTS_PROVIDER", "TTS_VOICE", "TTS_ENGINE", "TTS_PIPER_VOICE",
-               "STT_PROVIDER", "SIDECAR_URL",
+               "STT_PROVIDER", "SIDECAR_URL", "ARIA_AVATAR_MODE",
                "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS",
                "USER_LATITUDE", "USER_LONGITUDE", "USER_LOCATION",
                "GITHUB_TOKEN", "TAVILY_API_KEY"}
@@ -3132,6 +3132,7 @@ async def api_get_preferences():
         "tts_engine": vault_dict.get("TTS_ENGINE", "say"),
         "tts_piper_voice": vault_dict.get("TTS_PIPER_VOICE", "en_GB-alan-medium"),
         "stt_provider": vault_dict.get("STT_PROVIDER", "web_speech"),
+        "aria_avatar_mode": vault_dict.get("ARIA_AVATAR_MODE", "orb"),
         "github_token_set": bool(vault_dict.get("GITHUB_TOKEN", "").strip()),
         "user_location": vault_dict.get("USER_LOCATION", ""),
         "user_latitude": vault_dict.get("USER_LATITUDE", ""),

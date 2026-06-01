@@ -6,6 +6,8 @@
  */
 
 import { createOrb, type OrbState } from "./orb";
+import { createAriaAvatar, type AvatarState } from "./aria-avatar";
+import { withAuthHeaders as _withAuthHeadersAvatar } from "./auth-token";
 import { createVoiceInput, createAudioPlayer, speakViaBrowser } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
@@ -69,14 +71,30 @@ import "./style.css";
   // ---------------------------------------------------------------------------
 
   const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
-  const orb = createOrb(canvas);
+
+  // Aria appearance — vault key ARIA_AVATAR_MODE ∈ {orb, photo}, default orb.
+  // Toggle takes effect on next page load (no hot-swap; both renderers own
+  // the same canvas).
+  let useAvatar = false;
+  try {
+    const r = await fetch("/api/settings/preferences", _withAuthHeadersAvatar());
+    if (r.ok) {
+      const prefs = await r.json();
+      useAvatar = (prefs.aria_avatar_mode || "orb").toString().toLowerCase() === "photo";
+    }
+  } catch {
+    /* default orb */
+  }
+
+  const renderer: { setState(s: any): void; setAnalyser(a: AnalyserNode | null): void; } =
+    useAvatar ? createAriaAvatar(canvas) : createOrb(canvas);
 
   const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const WS_URL = `${wsProto}//${window.location.host}/ws/voice`;
   const socket = createSocket(WS_URL);
 
   const audioPlayer = createAudioPlayer();
-  orb.setAnalyser(audioPlayer.getAnalyser());
+  renderer.setAnalyser(audioPlayer.getAnalyser());
 
   // Attach debug transcript panel — must happen before onMessage wiring below
   attachTranscript(socket);
@@ -86,7 +104,7 @@ import "./style.css";
   function transition(newState: State) {
     if (newState === currentState) return;
     currentState = newState;
-    orb.setState(newState as OrbState);
+    renderer.setState(newState as OrbState);
     updateStatus(newState);
 
     // Show the stop button only while JARVIS is producing audio.

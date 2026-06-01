@@ -35,6 +35,7 @@ interface PreferencesResponse {
   tts_engine?: string;        // "say" | "piper"
   tts_piper_voice?: string;
   stt_provider?: string;  // "web_speech" | "whisper"
+  aria_avatar_mode?: string;  // "orb" | "photo"
   github_token_set?: boolean;
   user_location?: string;
   user_latitude?: string;
@@ -159,6 +160,20 @@ function buildPanelHTML(): string {
                 <option value="">(Auto-detect)</option>
               </select>
               <button class="settings-btn" id="btn-save-tts-voice">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>Aria appearance</label>
+            <div class="settings-input-row">
+              <select id="input-aria-avatar-mode">
+                <option value="orb">Orb (particle visualization)</option>
+                <option value="photo">Photo (audio-reactive portrait)</option>
+              </select>
+              <button class="settings-btn" id="btn-save-aria-avatar-mode">Save</button>
+            </div>
+            <div class="settings-hint" style="font-size:11px;color:#888;margin-top:4px">
+              Toggle takes effect on next page reload.
             </div>
           </div>
 
@@ -347,6 +362,8 @@ async function loadPreferences() {
     if (ttsVoiceEl) {
       populateVoiceOptions(ttsVoiceEl, prefs.tts_voice || "");
     }
+    const avatarModeEl = document.getElementById("input-aria-avatar-mode") as HTMLSelectElement | null;
+    if (avatarModeEl) avatarModeEl.value = prefs.aria_avatar_mode || "orb";
     const ttsEngineEl = document.getElementById("input-tts-engine") as HTMLSelectElement;
     const piperVoiceEl = document.getElementById("input-tts-piper-voice") as HTMLInputElement;
     if (ttsEngineEl) ttsEngineEl.value = prefs.tts_engine || "say";
@@ -426,6 +443,12 @@ function wireEvents() {
     // Mirror to localStorage so the browser-TTS fallback picks it up on
     // the next utterance without a settings round-trip.
     setPreferredVoice(voice);
+  });
+
+  // Save Aria avatar mode
+  document.getElementById("btn-save-aria-avatar-mode")?.addEventListener("click", async () => {
+    const v = (document.getElementById("input-aria-avatar-mode") as HTMLSelectElement).value;
+    await apiPost("/api/settings/keys", { key_name: "ARIA_AVATAR_MODE", key_value: v });
   });
 
   // Save TTS engine
