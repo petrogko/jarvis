@@ -148,9 +148,41 @@ export interface AudioPlayer {
 
 export function createAudioPlayer(): AudioPlayer {
   const audioCtx = new AudioContext();
+
+  // Voice warmth chain — sits between the buffer source and the analyser
+  // so the lip-sync formant readout reflects what the user actually hears.
+  //
+  //   source → highShelf → compressor → analyser → destination
+  //
+  // - highShelf: −3 dB above 6.5 kHz softens TTS sibilance/harshness
+  //   without dulling articulation.
+  // - compressor: gentle 2.5:1 above −22 dB pulls quiet moments forward,
+  //   the "she's leaning in" feel.
+  //
+  // Conservative defaults — audible but not coloring her into a different
+  // voice. Per-register variants (closer in counsel, more clipped in
+  // advisor) are roadmap item 5.2/5.3 once mode-detection ships.
+  const highShelf = audioCtx.createBiquadFilter();
+  highShelf.type = "highshelf";
+  highShelf.frequency.value = 6500;
+  highShelf.gain.value = -3;
+
+  const compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -22;
+  compressor.ratio.value = 2.5;
+  compressor.knee.value = 6;
+  compressor.attack.value = 0.005;
+  compressor.release.value = 0.12;
+
   const analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
+  // 2048 = ~23 Hz/bin at 48 kHz, the resolution the avatar's formant
+  // lip-sync (F1 ~300–900 Hz, F2 ~900–2500 Hz) was tuned for. The first
+  // 512 bins (which the avatar reads) cover up to ~12 kHz.
+  analyser.fftSize = 2048;
   analyser.smoothingTimeConstant = 0.8;
+
+  highShelf.connect(compressor);
+  compressor.connect(analyser);
   analyser.connect(audioCtx.destination);
 
   const queue: AudioBuffer[] = [];
@@ -170,7 +202,7 @@ export function createAudioPlayer(): AudioPlayer {
     const buffer = queue.shift()!;
     const source = audioCtx.createBufferSource();
     source.buffer = buffer;
-    source.connect(analyser);
+    source.connect(highShelf);
     currentSource = source;
 
     source.onended = () => {
