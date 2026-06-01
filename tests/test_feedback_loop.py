@@ -106,6 +106,14 @@ async def test_retry_below_max_attempts(monkeypatch):
     # allowlist for the duration of this test instead of relaxing the
     # production guard.
     monkeypatch.setenv("JARVIS_EXTRA_PROJECT_DIRS", "/tmp")
+    # Pin claude_runner to "direct" so the asyncio.create_subprocess_exec
+    # patch below is exercised. Without this, the in-Docker auto-detect
+    # picks "sidecar", which routes through sidecar_client and bypasses
+    # the mock entirely. Reload the module so the new env takes effect.
+    monkeypatch.setenv("JARVIS_CLAUDE_RUNNER", "direct")
+    import sys as _sys
+    _sys.modules.pop("claude_runner", None)
+    import claude_runner  # noqa: F401  — reload triggers _read_backend()
 
     qa = QAAgent()
 
