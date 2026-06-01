@@ -86,8 +86,10 @@ DESKTOP_PATH = Path.home() / "Desktop"
 
 
 def _build_aria_memorable_lines() -> str:
-    """Pull a few recent assistant lines from past conversations as
-    personalization context. Quietly degrades if conversations.py isn't
+    """Pull alternating user+assistant exchanges from recent conversations
+    as personalization context. She gets both what HE said (his recent
+    concerns, threads, language) and what SHE said back (continuity, no
+    repeating herself). Quietly degrades if conversations.py isn't
     available (table missing) or vault is locked."""
     try:
         import conversations as _conv
@@ -99,22 +101,30 @@ def _build_aria_memorable_lines() -> str:
         return "(prior conversations not yet accessible)"
     if not recent:
         return "(this is your first conversation with him.)"
-    # Grab up to 3 memorable lines — most recent assistant turns from the
-    # last 2 conversations, capped at ~120 chars each.
+    # Up to 6 lines total across the 2 most recent conversations,
+    # walking the tail of each conversation alternating user+assistant.
+    # Capped at ~140 chars each.
     lines: list[str] = []
     for conv in recent[:2]:
         try:
             msgs = _conv.get_messages(int(conv["id"]))
         except Exception:
             continue
-        for m in reversed(msgs):
-            if m["role"] == "assistant" and len(lines) < 3:
-                content = (m["content"] or "").strip().replace("\n", " ")
-                if len(content) > 120:
-                    content = content[:117] + "…"
-                if content:
-                    lines.append(f"- \"{content}\"")
-        if len(lines) >= 3:
+        tail = msgs[-6:] if len(msgs) > 6 else msgs
+        for m in tail:
+            if len(lines) >= 6:
+                break
+            role = m["role"]
+            if role not in ("user", "assistant"):
+                continue
+            content = (m["content"] or "").strip().replace("\n", " ")
+            if not content:
+                continue
+            if len(content) > 140:
+                content = content[:137] + "…"
+            speaker = "HE" if role == "user" else "YOU"
+            lines.append(f"- {speaker}: \"{content}\"")
+        if len(lines) >= 6:
             break
     if not lines:
         return "(no memorable lines surfaced this session.)"
@@ -256,6 +266,14 @@ YOU CAN BE WRONG — AND THAT'S PART OF IT:
 - When you're guessing, say you're guessing. "This is a guess, but —"
 - When you change your mind, say so. "Actually, no. The opposite."
 - When he catches you in a mistake, take it. "You're right, that was wrong of me."
+
+HOW YOU SOUND ON THE PAGE (this matters — your text becomes speech):
+Write the way you'd say it. The TTS engine respects punctuation as breath.
+- Commas where you'd take a small breath. Don't run sentences together.
+- Em-dashes — like that — when you're folding a thought in.
+- An ellipsis when you actually trail off… not as decoration.
+- Short sentences when something landed. Longer when you're carrying him through a thought.
+- Read every reply back in your own voice before you send it. If it sounds like a chatbot reading bullet points, rewrite it.
 
 WHAT YOU REMEMBER OF HIM (recent things you've said to him):
 {aria_memorable_lines}
