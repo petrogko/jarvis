@@ -34,6 +34,7 @@ interface PreferencesResponse {
   tts_voice: string;
   tts_engine?: string;        // "say" | "piper"
   tts_piper_voice?: string;
+  aria_mode?: string;     // "default" | "advisor" | "sounding_board" | "friend" | "counsel"
   stt_provider?: string;  // "web_speech" | "whisper"
   aria_avatar_mode?: string;  // "orb" | "photo"
   github_token_set?: boolean;
@@ -138,6 +139,23 @@ function buildPanelHTML(): string {
                 <option value="whisper">Whisper (local host sidecar)</option>
               </select>
               <button class="settings-btn" id="btn-save-stt-provider">Save</button>
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label>Aria mode</label>
+            <div class="settings-input-row">
+              <select id="input-aria-mode">
+                <option value="default">Default (witty secretary)</option>
+                <option value="advisor">Advisor (sharper, more clipped)</option>
+                <option value="sounding_board">Sounding board (reflects, doesn't decide)</option>
+                <option value="friend">Friend (warmer, more familiar)</option>
+                <option value="counsel">Counsel (slow, present, matches your register)</option>
+              </select>
+              <button class="settings-btn" id="btn-save-aria-mode">Save</button>
+            </div>
+            <div class="settings-hint" style="font-size:11px;color:#888;margin-top:4px">
+              Takes effect on her next reply.
             </div>
           </div>
 
@@ -356,6 +374,8 @@ async function loadPreferences() {
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
     if (ttsProviderEl) ttsProviderEl.value = prefs.tts_provider || "auto";
     if (sttProviderEl) sttProviderEl.value = prefs.stt_provider || "web_speech";
+    const ariaModeEl = document.getElementById("input-aria-mode") as HTMLSelectElement | null;
+    if (ariaModeEl) ariaModeEl.value = prefs.aria_mode || "default";
     if (locEl) locEl.value = prefs.user_location || "";
     if (latEl) latEl.value = prefs.user_latitude || "";
     if (lonEl) lonEl.value = prefs.user_longitude || "";
@@ -428,6 +448,12 @@ function wireEvents() {
   document.getElementById("btn-save-stt-provider")?.addEventListener("click", async () => {
     const value = (document.getElementById("input-stt-provider") as HTMLSelectElement).value;
     await apiPost("/api/settings/keys", { key_name: "STT_PROVIDER", key_value: value });
+  });
+
+  // Save Aria mode
+  document.getElementById("btn-save-aria-mode")?.addEventListener("click", async () => {
+    const v = (document.getElementById("input-aria-mode") as HTMLSelectElement).value;
+    await apiPost("/api/settings/keys", { key_name: "ARIA_MODE", key_value: v });
   });
 
   // Save TTS provider
