@@ -143,15 +143,91 @@ export interface AudioPlayer {
   enqueue(base64: string): Promise<void>;
   stop(): void;
   getAnalyser(): AnalyserNode;
+  setRegister(name: string): void;
   onFinished(cb: () => void): void;
 }
 
 export function createAudioPlayer(): AudioPlayer {
   const audioCtx = new AudioContext();
+
+  // Voice chain — sits between the buffer source and the analyser so the
+  // lip-sync formant readout reflects what the user actually hears.
+  //
+  //   source → lowShelf → presence → highShelf → compressor → outGain
+  //          → analyser → destination
+  //
+  // Filter values shift per register (driven by the [REG:X] marker the
+  // persona emits): soft is closer and warmer, counsel is intimate and
+  // quieter, dry is more present and less compressed, playful is brighter.
+  // Smooth ramps (setTargetAtTime) between presets so transitions don't
+  // click or thump.
+  const lowShelf = audioCtx.createBiquadFilter();
+  lowShelf.type = "lowshelf";
+  lowShelf.frequency.value = 200;
+  lowShelf.gain.value = 0;
+
+  const presence = audioCtx.createBiquadFilter();
+  presence.type = "peaking";
+  presence.frequency.value = 2400;
+  presence.Q.value = 0.9;
+  presence.gain.value = 0;
+
+  const highShelf = audioCtx.createBiquadFilter();
+  highShelf.type = "highshelf";
+  highShelf.frequency.value = 6500;
+  highShelf.gain.value = -3;
+
+  const compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -22;
+  compressor.ratio.value = 2.5;
+  compressor.knee.value = 6;
+  compressor.attack.value = 0.005;
+  compressor.release.value = 0.12;
+
+  const outGain = audioCtx.createGain();
+  outGain.gain.value = 1.0;
+
   const analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
+  analyser.fftSize = 2048;
   analyser.smoothingTimeConstant = 0.8;
+
+  lowShelf.connect(presence);
+  presence.connect(highShelf);
+  highShelf.connect(compressor);
+  compressor.connect(outGain);
+  outGain.connect(analyser);
   analyser.connect(audioCtx.destination);
+
+  // Register presets. Each tweak is small — we're tinting her, not
+  // remixing. Conservative on purpose; bigger deltas start sounding like
+  // a different person rather than the same person in a different mood.
+  type RegisterPreset = {
+    lowShelfGain: number;
+    presenceGain: number;
+    highShelfGain: number;
+    compThreshold: number;
+    compRatio: number;
+    outGain: number;
+  };
+  const REGISTER_PRESETS: Record<string, RegisterPreset> = {
+    neutral: { lowShelfGain: 0,   presenceGain: 0,   highShelfGain: -3, compThreshold: -22, compRatio: 2.5, outGain: 1.00 },
+    soft:    { lowShelfGain: 1.5, presenceGain: 0,   highShelfGain: -5, compThreshold: -26, compRatio: 3.5, outGain: 0.95 },
+    counsel: { lowShelfGain: 1.0, presenceGain: -1,  highShelfGain: -4, compThreshold: -28, compRatio: 4.0, outGain: 0.92 },
+    dry:     { lowShelfGain: -1,  presenceGain: 1.5, highShelfGain: -1, compThreshold: -18, compRatio: 2.0, outGain: 1.02 },
+    playful: { lowShelfGain: 0,   presenceGain: 1.5, highShelfGain:  0, compThreshold: -20, compRatio: 2.0, outGain: 1.05 },
+  };
+
+  function applyRegister(name: string) {
+    const p = REGISTER_PRESETS[name] || REGISTER_PRESETS.neutral;
+    const t = audioCtx.currentTime;
+    const tc = 0.08;  // smooth 80ms ramp — fast enough to land on phrase start, slow enough to not click
+    lowShelf.gain.setTargetAtTime(p.lowShelfGain, t, tc);
+    presence.gain.setTargetAtTime(p.presenceGain, t, tc);
+    highShelf.gain.setTargetAtTime(p.highShelfGain, t, tc);
+    compressor.threshold.setTargetAtTime(p.compThreshold, t, tc);
+    compressor.ratio.setTargetAtTime(p.compRatio, t, tc);
+    outGain.gain.setTargetAtTime(p.outGain, t, tc);
+  }
 
   const queue: AudioBuffer[] = [];
   let isPlaying = false;
@@ -170,7 +246,7 @@ export function createAudioPlayer(): AudioPlayer {
     const buffer = queue.shift()!;
     const source = audioCtx.createBufferSource();
     source.buffer = buffer;
-    source.connect(analyser);
+    source.connect(lowShelf);
     currentSource = source;
 
     source.onended = () => {
@@ -220,6 +296,10 @@ export function createAudioPlayer(): AudioPlayer {
 
     getAnalyser() {
       return analyser;
+    },
+
+    setRegister(name: string) {
+      applyRegister(name);
     },
 
     onFinished(cb: () => void) {

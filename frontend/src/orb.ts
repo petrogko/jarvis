@@ -13,6 +13,7 @@ export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 export interface Orb {
   setState(s: OrbState): void;
   setAnalyser(a: AnalyserNode | null): void;
+  setRegister(r: string): void;
   destroy(): void;
 }
 
@@ -159,10 +160,14 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     bass = 0; mid = 0;
     if (analyser) {
       analyser.getByteFrequencyData(freqData);
+      // Bin width is ~23 Hz at 48 kHz / fftSize=2048. Bass = 0..1.5 kHz
+      // (bins 0..64), mid = 1.5..4.5 kHz (bins 64..192). Tuned for the
+      // shared analyser used by both this orb and the formant-aware
+      // avatar lip-sync.
       let bSum = 0, mSum = 0;
-      for (let i = 0; i < 8; i++) bSum += freqData[i];
-      for (let i = 8; i < 24; i++) mSum += freqData[i];
-      bass = bSum / (8 * 255); mid = mSum / (16 * 255);
+      for (let i = 0; i < 64; i++) bSum += freqData[i];
+      for (let i = 64; i < 192; i++) mSum += freqData[i];
+      bass = bSum / (64 * 255); mid = mSum / (128 * 255);
     }
 
     // Depth Z breathing
@@ -328,6 +333,7 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
       analyser = a;
       if (a) freqData = new Uint8Array(a.frequencyBinCount);
     },
+    setRegister(_r: string) { /* orb is register-agnostic */ },
     destroy() {
       destroyed = true;
       window.removeEventListener("resize", onResize);
