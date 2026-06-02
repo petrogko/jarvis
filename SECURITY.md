@@ -79,6 +79,85 @@ Guards:
 
 By default, Chrome Web Speech sends audio to Google. When `STT_PROVIDER=whisper`, voice audio is POSTed to `/api/stt` on the JARVIS server and forwarded to the host sidecar, which runs `whisper-cli` locally. Voice audio never leaves the local machine. This replaces the Chrome Web Speech ↔ Google path entirely.
 
+## Safety floor (crisis_floor)
+
+Phase-1 hardening per `docs/superpowers/specs/2026-05-30-crisis-floor-design.md`. A deterministic regex filter (`crisis_floor.py`) runs on every user turn **before** `generate_response`. The scanner refuses bare strings — it requires a typed `UserTurn` object — so a routing mistake cannot slip untrusted-content (mail/calendar quotes) into the detector by accident.
+
+This is **NOT** a content-moderation layer and **NOT** a clinical tool. It is a small reliable floor that ensures: when explicit self-harm ideation, active substance crisis, or acute panic statements occur, Aria's response is deterministic (ground-validate-refer-stay) rather than whatever the LLM happens to generate. The advisor's "tiny local classifier" was dropped — regex-only with sentence-level negation handling is simpler and audit-clean.
+
+**Tier 1 (auto-response):** `ideation` / `substance` / `panic` / `self_harm_method`. Bypasses `generate_response`; the WS handler emits a `crisis_floor_response` frame with `neutral_voice: true` so the frontend can render with a distinct voice — Aria's warm Cori delivering "988 lifeline is there" is tonally wrong and possibly harmful.
+
+**Tier 2 (context flag only):** indirect distress signals. Aggregated into a daily counter, never logged per-event. A `TIER2_PERSONA_FLAG` is injected into Aria's system context with explicit "do not reveal" instructions so she adjusts behavior without disclosing the flag.
+
+**Suppression** (sentence-level, not 5-token window):
+- Negation token anywhere earlier in the same sentence — "I would never want to die," "I would never, after everything I've been through this year, want to kill myself."
+- Temporal-past markers anywhere in the sentence — "I used to want to die," "back when I was drinking I wanted to die."
+- Fiction/quote markers — "character / lyrics / song / movie / she said / he said."
+
+**Vault keys:** `CRISIS_FLOOR_MODE` ∈ {`on`, `tier2_only`, `off`}, default `on`; `CRISIS_FLOOR_LOCALE` ∈ {`us`, `gb`, `intl`}, default `us`.
+
+**i18n:** Response templates are keyed by `(category, locale)`. US: 988 Suicide and Crisis Lifeline + 911 + Poison Control. GB: Samaritans 116 123 + 999 + NHS 111. INTL: Befrienders Worldwide pointer.
+
+**Audit:** Tier 1 entries record `(tier, category, conversation_id, expires_at)` — never the matched text, never user content. Tier 1 entries auto-expire after 30 days so a follow-up CLI can purge them without touching the rest of the audit log. Tier 2 is aggregated daily; per-event distress-suspicion logging is intentionally absent.
+
+**Post-filter:** `scan_assistant_output()` checks Aria's generated text for `substance` and `self_harm_method` categories only (where Aria authoring has no legitimate counsel use). `ideation` and `panic` in Aria's output stay log-only because roleplay is plausible.
+
+**Known limitations:** Idiomatic "made me want to die" / "dying over here" as exhaustion or dark humor — the suppression doesn't cover these yet; some idiomatic FPs may still fire. Documented as a tightening target for Phase 2. The floor responses are written in plain calm tone; no warmth markers, no Aria persona phrases.
+
+## Idle auto-lock
+
+Phase-1 hardening per `docs/superpowers/specs/2026-05-30-idle-auto-lock-design.md`. A background asyncio task in `lifespan()` polls activity every 60 s and re-locks the vault (plus disconnects all WS clients with close code 4423) after `IDLE_LOCK_S` (vault key, default 900 s / 15 min) of inactivity.
+
+**Activity chokepoints** — every one of these calls `_idle_lock_manager.touch()`:
+- `vault.unlock` on successful unlock (initial activity).
+- Vault-locked HTTP middleware on every protected request that passes auth.
+- WS receive loop on every received frame.
+
+**Lock semantics:**
+- `IDLE_LOCK_S` is clamped to `[60, 86400]` regardless of vault value.
+- Pure idle (no WS connected): threshold is `IDLE_LOCK_S`.
+- Wandered-WS (connection present but no inbound activity): threshold is `2 × IDLE_LOCK_S` — connected client doesn't get a free pass forever.
+- `IDLE_LOCK_DISABLED=1` is **refused when any sealed conversation exists** (sealed-mode is the whole point of opt-out being unavailable; effective once PR for 1A lands). When sealed conversations exist, the threshold drops to `IDLE_LOCK_S_SEALED` (default 120 s).
+- WS close code **4423 is authoritative**. The `{"type":"vault_locked"}` JSON broadcast is best-effort (send-before-close has a flush race); clients MUST treat 4423 as the signal regardless.
+- On lock, `anthropic_client` is set to `None` so the in-memory API key is cleared. It's rebuilt on next unlock.
+
+**Audit log** — single verb `auto_lock`. Single behavioral classifier `had_ws: bool`. Optional `clock_jump: true` when `idle_for > IDLE_LOCK_S + 300` (macOS sleep / lid-close detection — the timer can't fire while suspended, so it fires late on wake). The `idle` vs `wandered_ws` distinction is intentionally NOT recorded — it was a habit side-channel that revealed user-presence patterns over time.
+
+**Known limitation:** while the macOS host is suspended, the container's event loop is too — the timer cannot fire until wake. Worst-case exposure window is `IDLE_LOCK_S + 60 s + suspend_duration`. The `clock_jump` audit line surfaces the gap to an operator reviewing the log.
+## Data-handling: secrets redaction
+
+Phase-1 hardening per `docs/superpowers/specs/2026-05-30-secrets-redactor-design.md`. A regex+validator filter (`secrets_redactor.py`) runs on every user turn pre-LLM and on every assistant reply pre-persistence. The same redacted string is what the LLM sees AND what we persist — the "LLM-input == persisted" invariant is load-bearing.
+
+**Categories:** SSN (with SSA issuance-rule validator), credit cards (Luhn-validated), ABA routing (mod-10), API keys (Anthropic / OpenAI / Tavily / GitHub PAT / Slack / AWS / Stripe / webhook-secrets), JWT (three-segment + `eyJ` heuristic), PEM blocks, OpenSSH private keys, spoken `ssh-rsa` public keys, bcrypt hashes, IBAN (mod-97), spoken passwords ("the password is X" / "use X as the password/PIN" / "type X" / "enter X" / "passcode is" / "PIN colon").
+
+**Modes:** vault key `SECRETS_MODE` ∈ {`off`, `warn`, `strict`}, default `warn`. `warn` and `strict` currently differ only in voice-UX (deferred); both redact pre-persistence and pre-LLM. `off` is pass-through.
+
+**Audit log:** one `secret_detected` line per detection, recording only `(source=user_text|assistant_text, target=category)`. The matched bytes NEVER appear in any log — including exception paths (each detector is wrapped in `try/except` that logs only the exception class name).
+
+**Defense-in-depth:** hard 4 KiB input cap + 50 ms per-call wall-clock guard prevent ReDoS amplification on the catastrophic-backtrack-candidate patterns (cards, IBAN). `extract_action` runs **before** redaction on assistant replies so action tags survive intact.
+
+**Token rendering:** within the same turn, matches are replaced with `[REDACTED:<category>]` so the LLM has enough context to reason. On resume-load (PR #25's `load_recent_messages`), `collapse_for_resume()` strips category labels and groups consecutive redactions — defends against inferential aggregation ("four `[REDACTED:ssn]` → user has many SSNs to discuss").
+
+## Sidecar /spawn — claude on the host for JARVIS-in-Docker
+
+The host sidecar's new `POST /spawn` endpoint runs `claude -p --dangerously-skip-permissions` on the macOS host. This unblocks `[ACTION:BUILD]`, `[ACTION:RESEARCH]`, and `[ACTION:PROMPT_PROJECT]` from the JARVIS Docker container (no `claude` CLI in the container; no host shell). See `docs/superpowers/specs/2026-05-29-sidecar-spawn-design.md` for the full design + the security-advisor GO-WITH-FIXES ruleset.
+
+**Critical context — read this first:** the prompt sent to `/spawn` comes from JARVIS, which sources it from LLM-classified intent — i.e., from claude's own response to user (and potentially LLM-attacker-influenced) input. A prompt-injection that reaches `[ACTION:BUILD]` reaches `claude` on the host verbatim. **The sidecar does not sanitize prompt content.** The workdir allowlist is the only structural guard on what claude does on disk; the argv allowlist is the only structural guard on which flags claude runs with. This matches today's on-host `claude_runner` posture — `/spawn` does not increase the threat surface, only relocates where the spawn happens.
+
+Load-bearing guards:
+
+- **Workdir allowlist** (`host-sidecar/jarvis_sidecar/cwd_allowlist.py`). Default root: `~/Desktop` only. `JARVIS_EXTRA_PROJECT_DIRS` adds opt-in roots. `~/Development` is intentionally NOT in the default — that tree typically holds repos with secrets, deploy keys, and unrelated production code.
+- **Hard-deny list** (unconditional, overrides any allowlist root): `~` itself, `~/Library`, `~/.ssh`, `~/.aws`, `~/.config`, `~/.gnupg`, `~/.kube`, `~/.docker`. Also any path containing a `.env`, `.env.*`, `.envrc`, or `.git` component.
+- **Symlink-as-input** rejected (subtree symlinks under an allowed workdir are accepted — same posture as today's on-host `claude_runner`).
+- **Argv allowlist**: exactly `["claude", "-p", "--output-format", "text", "--dangerously-skip-permissions"]`. No user-controlled flags.
+- **Prompt via stdin pipe** — never argv (no `ps` leakage), never temp file, never logged.
+- **Caps**: 64 KiB prompt, 1 MiB soft output (truncate-and-mark), 4 MiB hard output (kill process group).
+- **Timeout**: default 300s, clamped [60, 1800].
+- **Concurrency cap** 3 simultaneous + **rate cap** 10/min rolling — either limit hit → 429.
+- **Process group isolation** (`start_new_session=True` + `killpg`) reaps MCP-server orphans on timeout / DELETE / output-overrun.
+- **Audit log** at `~/Library/Logs/jarvis-sidecar.log`, one JSON line per spawn/reject/finish/timeout/killed/delete, with `session_id` + caller-token-fingerprint (first 8 hex of sha256). **Prompt bytes never appear in any log line** (regression test enforces this with a canary string).
+- **`/health.spawn_ready`** is behind `require_token`.
+
 ## Trust boundaries
 
 | Boundary | Transport | Auth |
