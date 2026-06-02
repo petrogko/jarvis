@@ -52,6 +52,19 @@ def _get_conn():
     return sess.memory_conn
 
 
+def _fts5_available(conn) -> bool:
+    """Some SQLCipher builds (notably the pysqlcipher3 wheel used in CI)
+    omit FTS5. Detect at runtime so the rest of the schema still works."""
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE temp._fts5_probe USING fts5(x)"
+        )
+        conn.execute("DROP TABLE temp._fts5_probe")
+        return True
+    except Exception:
+        return False
+
+
 def _init_schema(conn) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS conversations (
@@ -72,33 +85,55 @@ def _init_schema(conn) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_messages_conv_ts ON messages(conversation_id, ts);
         CREATE INDEX IF NOT EXISTS idx_conv_last_message ON conversations(last_message_at DESC);
-
-        -- FTS index over messages.content for cross-conversation recall.
-        -- Self-contained (not external-content) — duplicates the content
-        -- column to avoid FTS-rebuild gotchas; the storage cost is fine
-        -- for a single-user voice assistant. Aria queries this every turn
-        -- to surface "you mentioned X two weeks ago" context that wouldn't
-        -- otherwise reach her.
-        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            content,
-            conversation_id UNINDEXED,
-            role UNINDEXED,
-            ts UNINDEXED,
-            tokenize='porter unicode61'
-        );
     """)
     conn.commit()
-    # Backfill the FTS table on first init after unlock if it's empty but
-    # `messages` already has rows. Idempotent across restarts.
-    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
-    msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-    if fts_count == 0 and msg_count > 0:
-        log.info("conversations: backfilling messages_fts (%d rows)", msg_count)
-        conn.execute(
-            "INSERT INTO messages_fts (rowid, content, conversation_id, role, ts) "
-            "SELECT id, content, conversation_id, role, ts FROM messages"
-        )
+
+    # FTS index over messages.content for cross-conversation recall.
+    # Created only when the SQLCipher build supports FTS5 — production
+    # container does; CI's pysqlcipher3 wheel sometimes doesn't. When
+    # unavailable, search_messages_fts returns [] silently and the rest
+    # of the conversations API works normally.
+    if _fts5_available(conn):
+        conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content,
+                conversation_id UNINDEXED,
+                role UNINDEXED,
+                ts UNINDEXED,
+                tokenize='porter unicode61'
+            );
+        """)
         conn.commit()
+        # Backfill the FTS table on first init after unlock if it's empty
+        # but `messages` already has rows. Idempotent across restarts.
+        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        if fts_count == 0 and msg_count > 0:
+            log.info("conversations: backfilling messages_fts (%d rows)", msg_count)
+            conn.execute(
+                "INSERT INTO messages_fts (rowid, content, conversation_id, role, ts) "
+                "SELECT id, content, conversation_id, role, ts FROM messages"
+            )
+            conn.commit()
+    else:
+        log.warning("conversations: FTS5 unavailable in this SQLCipher build — semantic recall disabled")
+
+
+def _has_messages_fts(conn) -> bool:
+    """Cheap runtime check (used in hot path). Cached on the connection."""
+    cached = getattr(conn, "_jarvis_has_messages_fts", None)
+    if cached is not None:
+        return cached
+    try:
+        conn.execute("SELECT 1 FROM messages_fts LIMIT 0")
+        ok = True
+    except Exception:
+        ok = False
+    try:
+        conn._jarvis_has_messages_fts = ok  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +210,14 @@ def record_message(conversation_id: int, role: str, content: str) -> int:
         (conversation_id, role, content, now),
     )
     msg_id = cur.lastrowid
-    # Mirror into the FTS index. Same rowid so we could JOIN if needed.
-    conn.execute(
-        "INSERT INTO messages_fts (rowid, content, conversation_id, role, ts) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (msg_id, content, conversation_id, role, now),
-    )
+    # Mirror into the FTS index when available. Skip silently if this
+    # SQLCipher build lacks FTS5 (e.g. CI's pysqlcipher3 wheel).
+    if _has_messages_fts(conn):
+        conn.execute(
+            "INSERT INTO messages_fts (rowid, content, conversation_id, role, ts) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (msg_id, content, conversation_id, role, now),
+        )
     conn.execute(
         "UPDATE conversations SET last_message_at = ?, "
         "message_count = message_count + 1 WHERE id = ?",
@@ -229,6 +266,8 @@ def search_messages_fts(
     fts_query = " OR ".join(tokens)
 
     conn = _get_conn()
+    if not _has_messages_fts(conn):
+        return []
     where_extra = ""
     params: list = [fts_query]
     if exclude_conversation_id is not None:
