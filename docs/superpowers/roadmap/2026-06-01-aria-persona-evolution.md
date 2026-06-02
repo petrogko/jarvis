@@ -118,8 +118,8 @@ Small markdown briefs per domain at `aria_domains/<name>.md`. NOT general knowle
 - **Status:** ✅ DONE. Six domains shipped: business / legal / fatherhood / finance / risk / partnerships. Adding more is trivial — drop a markdown file in `aria_domains/`, add a keyword regex to `_DOMAIN_KEYWORDS`. Each brief is a scaffold meant to drift toward what HE actually wants over time.
 
 ### B.5 Proactive turns
-Background loop scans recent conversations + calendar + open profile threads and decides if there's something worth surfacing on next connect. "You mentioned the partnership three weeks ago and went quiet. Where are you with it?" Right now she's reactive. A partner notices.
-- **Status:** not started. Multi-day. Depends on B.1 (open threads in profile) + B.2 (semantic recall).
+She notices things between conversations and brings them up on next connect. "You mentioned the partnership three weeks ago and went quiet — where are you with it?" Right now she's reactive. A partner notices.
+- **Status:** Phase 1 done — `_identify_open_thread()` fires on every WS reconnect with a resumed conversation. Haiku call over profile + last 3 conversation tails returns one open thread or "none"; if a thread is found, the opener brief includes it. Costs one Haiku call per reconnect (cheap). Phase 2 (background scheduler that surfaces threads even without a reconnect — desktop notification, scheduled check-ins) is queued.
 
 ### Dependency graph
 

@@ -289,6 +289,111 @@ _RE_PROFILE_NOTE = re.compile(
 )
 
 
+async def _identify_open_thread(
+    client,
+    current_conversation_id: int,
+    lookback_conversations: int = 3,
+) -> str:
+    """B.5 proactive turn — given the user's profile + the tails of the last
+    few PRIOR conversations, ask a small Haiku call: 'is there a thread he
+    started talking about and went quiet on, that you should check in about
+    when he comes back?'
+
+    Returns a short sentence describing the thread, or '' if nothing stands
+    out. Failures are silent — the opener falls through to its non-proactive
+    default. Costs one Haiku call per resume, only when she actually has
+    history to reason about.
+    """
+    try:
+        import conversations as _conv
+    except Exception:
+        return ""
+    try:
+        recent = _conv.list_recent_conversations(limit=lookback_conversations + 1)
+    except Exception:
+        return ""
+    if not recent:
+        return ""
+    # Drop the current/live conversation; we want history, not now.
+    past = [c for c in recent if int(c.get("id", 0)) != current_conversation_id][:lookback_conversations]
+    if not past:
+        return ""
+
+    # Build a compact transcript-tail block per past conversation.
+    blocks: list[str] = []
+    for conv in past:
+        try:
+            msgs = _conv.get_messages(int(conv["id"]))
+        except Exception:
+            continue
+        tail = msgs[-8:] if len(msgs) > 8 else msgs
+        lines: list[str] = []
+        for m in tail:
+            role = m["role"]
+            if role not in ("user", "assistant"):
+                continue
+            content = (m["content"] or "").strip().replace("\n", " ")
+            if len(content) > 200:
+                content = content[:197] + "…"
+            speaker = "HIM" if role == "user" else "YOU"
+            lines.append(f"  {speaker}: {content}")
+        if lines:
+            blocks.append("\n".join(lines))
+
+    if not blocks:
+        return ""
+
+    # Pull his profile too — open threads are often visible there.
+    try:
+        import aria_profile as _aria_profile_mod
+        profile_md = _aria_profile_mod.load_profile() or ""
+    except Exception:
+        profile_md = ""
+
+    system_prompt = (
+        "You are Aria identifying ONE open thread worth checking in on when he reconnects. "
+        "An open thread is something he started talking about — a worry, a decision, a person, "
+        "a deal — that he went quiet on or that has a natural next beat. "
+        "Look for: questions he asked that you never circled back on, decisions he was leaning "
+        "into but hadn't committed to, people in his life he mentioned with weight, deadlines "
+        "that should now be live. "
+        "Output ONE sentence describing the thread, OR the single word 'none' if nothing "
+        "genuinely stands out. Do not pad. Do not list multiple. Do not write the opener — "
+        "just name the thread."
+    )
+
+    user_prompt = (
+        f"HIS PERSISTENT PROFILE:\n{profile_md or '(empty)'}\n\n"
+        f"RECENT CONVERSATION TAILS (oldest first):\n"
+        + "\n---\n".join(blocks)
+        + "\n\nWhat is ONE open thread worth raising? One sentence, or 'none'."
+    )
+
+    try:
+        resp = await client.messages.create(
+            model=_ARIA_HAIKU,
+            max_tokens=80,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        out = (resp.content[0].text or "").strip()
+    except Exception as e:
+        log.warning(f"_identify_open_thread: LLM call failed: {e}")
+        return ""
+
+    # Sanitize: strip surrounding quotes, ignore the explicit 'none' result.
+    out = out.strip().strip('"').strip("'").strip()
+    if not out:
+        return ""
+    if out.lower() in ("none", "none.", "n/a", "nothing", "nothing stands out", "nothing stands out."):
+        return ""
+    # Cap length so it can't blow up the opener brief.
+    if len(out) > 240:
+        out = out[:237] + "…"
+    log.info("aria proactive thread: %s", out)
+    return out
+
+
 def _extract_profile_notes(text: str) -> tuple[str, list[str]]:
     """Pull every [PROFILE_NOTE: ...] marker out of the reply. Returns
     (cleaned_text, notes). Multiple notes per turn are allowed."""
@@ -2977,14 +3082,34 @@ async def voice_handler(ws: WebSocket):
                         try:
                             time_since = _build_aria_time_since()
                             mem_lines = _build_aria_memorable_lines()
+
+                            # PROACTIVE: identify ONE open thread worth raising
+                            # before composing the opener. Profile + recent
+                            # exchange tails go to Haiku with a tight ask —
+                            # if a thread stands out, the opener weaves it in;
+                            # if nothing does, the opener stays presence-only.
+                            open_thread = await _identify_open_thread(
+                                anthropic_client, conversation_id
+                            )
+
+                            thread_block = ""
+                            if open_thread:
+                                thread_block = (
+                                    f"\nONE OPEN THREAD WORTH RAISING:\n"
+                                    f"{open_thread}\n"
+                                    f"If it lands naturally, ask about it in your opener. "
+                                    f"If it would feel forced, ignore it — better to be present than to fish.\n"
+                                )
+
                             opener_brief = (
                                 f"You're opening this conversation as {USER_NAME} reconnects. "
                                 f"He doesn't need a greeting template — he needs to feel that you noticed "
                                 f"he was gone and that you remember.\n\n"
                                 f"WHEN YOU LAST SPOKE: {time_since}\n"
-                                f"RECENT THINGS YOU'VE SAID TO HIM:\n{mem_lines}\n\n"
-                                f"Open in ONE sentence — two at most. Reference the gap or one of the prior threads if it lands naturally. "
-                                f"No 'good morning' template. No question. Just presence — the way you'd open a door for someone you know."
+                                f"RECENT THINGS YOU'VE SAID TO HIM:\n{mem_lines}\n"
+                                f"{thread_block}\n"
+                                f"Open in ONE sentence — two at most. Reference the gap, a prior thread, or the open thread above if it lands. "
+                                f"No 'good morning' template. No question unless the open thread genuinely warrants one. Just presence — the way you'd open a door for someone you know."
                             )
                             opener_resp = await anthropic_client.messages.create(
                                 model="claude-haiku-4-5-20251001",
