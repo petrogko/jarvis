@@ -110,8 +110,9 @@ lancedb + embeddings (OpenClaw memory-lancedb port). Every conversation turn is 
 - **Status:** not started. Multi-day. Depends on OpenClaw port.
 
 ### B.3 Document ingestion
-Upload PDFs (contracts, term sheets, P&Ls, school reports). Sidecar extracts text + Aria summarizes + stores with metadata in semantic memory. Now "tell me what's wrong with this term sheet" actually reads the term sheet.
-- **Status:** not started. Multi-day. Depends on B.2 (storage) + sidecar PDF extract.
+Upload contracts, term sheets, P&Ls, school reports. She stores them encrypted and reads them in context when referenced.
+- **Status:** Phase 1 done — text/markdown documents via API (`POST /api/documents` title+content), stored in encrypted memory DB. Title-based reference detection: when his turn contains a stored document's title (case-insensitive substring, min 4 chars), the full doc is injected into her prompt. 50 KiB per-doc cap. CRUD endpoints: POST/GET/DELETE `/api/documents`, GET `/api/documents/{id}`.
+- **Deferred (phase 2):** PDF extraction (sidecar pdftotext / pymupdf with GPL discipline like Piper), frontend upload UI (modal + drag-drop), FTS-based retrieval for unnamed-doc queries, per-doc metadata (counterparty, draft/signed, source, tags).
 
 ### B.4 Domain priors
 Small markdown briefs per domain at `aria_domains/<name>.md`. NOT general knowledge (Opus has it) — but the frameworks HE cares about, the red flags HE wants flagged, the questions HE wants her to ask. Loaded into context when a relevant turn fires (keyword classifier in `aria_domains.py` matches → up to 3 briefs concatenated and injected into system prompt).
