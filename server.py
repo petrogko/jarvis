@@ -1850,6 +1850,36 @@ async def generate_response(
     if last_response:
         system += f'\n\nYOUR LAST RESPONSE (do not repeat this):\n"{last_response[:150]}"'
 
+    # Capability awareness — tell her plainly which integrations are
+    # actually wired up so she doesn't claim to do things she can't.
+    # Triggered by live feedback: she said "On it, sir" to a research
+    # request and then nothing visible happened, then later misdiagnosed
+    # the cause. The fix is to put the truth in her context: which
+    # action tags are safe to emit and which will fail silently.
+    try:
+        _have_tavily = bool(_vault_get("TAVILY_API_KEY", "").strip())
+        _have_github = bool(_vault_get("GITHUB_TOKEN", "").strip())
+        _have_fish   = bool(_vault_get("FISH_API_KEY", "").strip())
+        _cap_lines = [
+            f"- [ACTION:WEB_SEARCH]  Tavily quick-search:       {'AVAILABLE' if _have_tavily else 'UNAVAILABLE — Tavily key not in vault'}",
+            f"- [ACTION:GH_ISSUE_*]  GitHub issues read/write:  {'AVAILABLE' if _have_github else 'UNAVAILABLE — GitHub token not in vault'}",
+            "- [ACTION:RESEARCH]    Deep research via Claude Code subprocess: AVAILABLE (but takes minutes; warn him it's not instant)",
+            "- [ACTION:BUILD]       Spawn Claude Code to build a project:    AVAILABLE",
+            "- [ACTION:OPEN_TERMINAL] / Apple Calendar / Mail / Notes:        AVAILABLE (host AppleScript)",
+            f"- Voice (Fish Audio cloud TTS): {'available' if _have_fish else 'local TTS only — Cori via Piper / say'}",
+            "- Persistent profile + cross-conversation FTS recall + document store: AVAILABLE (these are silent — she uses them naturally)",
+        ]
+        system += (
+            "\n\nWHAT YOU CAN ACTUALLY DO RIGHT NOW (do not pretend otherwise):\n"
+            + "\n".join(_cap_lines)
+            + "\n\nIf he asks for something requiring an UNAVAILABLE integration: do NOT emit the action tag and do NOT say 'on it.' "
+            "Say plainly which key is missing (e.g. 'Tavily key needs to be in settings'), and offer what you CAN do — work from your training, "
+            "use [ACTION:RESEARCH] for a deeper but slower pass via Claude Code, or ask sharper questions instead. "
+            "When you DO emit [ACTION:RESEARCH], tell him it'll take a few minutes — that path runs Claude Code in the background and feedback isn't instant yet."
+        )
+    except Exception as _e:
+        log.warning(f"capability awareness build failed: {_e}")
+
     # Domain priors — load HIS frameworks for whatever domain(s) this turn
     # touches. NOT general knowledge (Opus has it); this is the stance HE
     # wants her to take in business / legal / fatherhood / etc. Cap 3 to
