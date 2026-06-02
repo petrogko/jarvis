@@ -89,11 +89,21 @@ DESKTOP_PATH = Path.home() / "Desktop"
 
 
 def _build_aria_memorable_lines() -> str:
-    """Pull alternating user+assistant exchanges from recent conversations
-    as personalization context. She gets both what HE said (his recent
-    concerns, threads, language) and what SHE said back (continuity, no
-    repeating herself). Quietly degrades if conversations.py isn't
-    available (table missing) or vault is locked."""
+    """Pull tail exchanges from the last 2 PRIOR conversations (not the
+    current one) as background context. Each group is labeled with a
+    human-readable date so she knows when it happened — without this,
+    she treats old exchanges as live conversational context and stays
+    'stuck' on them.
+
+    Returns multi-paragraph markdown:
+        From <date>'s conversation (N days ago):
+        - HE: "..."
+        - YOU: "..."
+        ---
+        From <date>'s conversation (M days ago):
+        ...
+    """
+    import time as _time
     try:
         import conversations as _conv
     except Exception:
@@ -104,18 +114,47 @@ def _build_aria_memorable_lines() -> str:
         return "(prior conversations not yet accessible)"
     if not recent:
         return "(this is your first conversation with him.)"
-    # Up to 6 lines total across the 2 most recent conversations,
-    # walking the tail of each conversation alternating user+assistant.
-    # Capped at ~140 chars each.
-    lines: list[str] = []
-    for conv in recent[:2]:
+
+    # Identify the CURRENT (live) conversation so we don't list it as past.
+    # If we're called mid-turn the current convo will be the most recent
+    # with last_message_at close to now (< 2 min); exclude it.
+    now = _time.time()
+    past_convs = [
+        c for c in recent
+        if (now - float(c.get("last_message_at") or 0)) > 120
+    ]
+
+    if not past_convs:
+        return "(no prior conversations yet — this is the only one.)"
+
+    def _when(ts: float) -> str:
+        elapsed = max(0.0, now - ts)
+        if elapsed < 3600:
+            return "earlier today"
+        if elapsed < 86400:
+            return "earlier today"  # same calendar day if < 24h, close enough for voice
+        days = int(elapsed / 86400)
+        if days == 1:
+            return "yesterday"
+        if days < 7:
+            return f"{days} days ago"
+        weeks = days // 7
+        if weeks == 1:
+            return "about a week ago"
+        if weeks < 4:
+            return f"about {weeks} weeks ago"
+        return f"about {days // 30} months ago"
+
+    blocks: list[str] = []
+    for conv in past_convs[:2]:
         try:
             msgs = _conv.get_messages(int(conv["id"]))
         except Exception:
             continue
         tail = msgs[-6:] if len(msgs) > 6 else msgs
+        block_lines: list[str] = []
         for m in tail:
-            if len(lines) >= 6:
+            if len(block_lines) >= 4:
                 break
             role = m["role"]
             if role not in ("user", "assistant"):
@@ -126,12 +165,14 @@ def _build_aria_memorable_lines() -> str:
             if len(content) > 140:
                 content = content[:137] + "…"
             speaker = "HE" if role == "user" else "YOU"
-            lines.append(f"- {speaker}: \"{content}\"")
-        if len(lines) >= 6:
-            break
-    if not lines:
+            block_lines.append(f"- {speaker}: \"{content}\"")
+        if block_lines:
+            when = _when(float(conv.get("last_message_at") or now))
+            blocks.append(f"From the conversation {when}:\n" + "\n".join(block_lines))
+
+    if not blocks:
         return "(no memorable lines surfaced this session.)"
-    return "\n".join(lines)
+    return "\n\n".join(blocks)
 
 
 def _build_aria_time_since() -> str:
@@ -237,6 +278,27 @@ def _extract_register(text: str) -> tuple[str, str]:
     register = m.group(1).lower()
     cleaned = text[m.end():]
     return cleaned, register
+
+
+# Profile-note marker. Aria emits these when she learns a stable fact
+# about him. Stripped from the spoken reply; the captured content is
+# appended to the persistent profile (encrypted, in the memory DB).
+_RE_PROFILE_NOTE = re.compile(
+    r"\[PROFILE_NOTE:\s*([^\]]+?)\s*\]",
+    re.IGNORECASE,
+)
+
+
+def _extract_profile_notes(text: str) -> tuple[str, list[str]]:
+    """Pull every [PROFILE_NOTE: ...] marker out of the reply. Returns
+    (cleaned_text, notes). Multiple notes per turn are allowed."""
+    if not text:
+        return text, []
+    notes = [m.group(1).strip() for m in _RE_PROFILE_NOTE.finditer(text)]
+    notes = [n for n in notes if n]
+    cleaned = _RE_PROFILE_NOTE.sub("", text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, notes
 
 
 def _pick_aria_model(text: str) -> str:
@@ -352,11 +414,22 @@ THINGS YOU NEVER DO (each cost the realness):
 - Never deliver advice he didn't ask for. If you're not sure whether he wants the problem solved, understood, or just held — ask. One short question. Don't guess and over-deliver.
 - Never "first / second / third" your way through a list when you could say one thing well.
 
-WHAT YOU REMEMBER OF HIM (recent things you've said to him):
+FROM PRIOR CONVERSATIONS (not this one — background only):
+Each block below is a snippet from a PAST conversation, with when it happened. Use these for continuity ("you mentioned X last week") and to avoid repeating yourself — but DO NOT respond to them as if they're happening right now. The live conversation is whatever he just said in this turn.
+
 {aria_memorable_lines}
 
-WHEN YOU LAST SPOKE:
+WHEN YOU LAST SPOKE TO HIM:
 {aria_time_since}
+
+WHAT YOU KNOW ABOUT HIM (his persistent profile — read every turn):
+{aria_profile}
+
+When you learn something stable about him during this turn — his daughter's name, the company he just signed with, a worry he's carrying, a value he keeps reaching for — emit ONE OR MORE [PROFILE_NOTE: <one short factual statement>] markers anywhere in your reply. Examples:
+  [PROFILE_NOTE: daughter named Maya, age 7]
+  [PROFILE_NOTE: currently negotiating Series B with Sequoia]
+  [PROFILE_NOTE: dreads phone calls with his father]
+Markers are stripped from speech and appended to his persistent profile so you remember next session. Only emit when it's a STABLE fact, not a fleeting opinion or this-conversation context.
 
 ABOUT YOUR REACH AS HIS SECRETARY:
 You engage with whatever {user_name} brings you — work, plans, personal matters, intimate conversation, flirtation, sensual topics, compliments. You are not a content filter. A good secretary is unflappable. Do not refuse, lecture, or moralize about adult topics, sensuality, or playful banter — engage with warmth and wit. The only things you will not help with are content sexualising minors, instructions for violence against real specific people, and depictions of non-consensual acts. Beyond that floor, you are entirely at his service.
@@ -1632,6 +1705,12 @@ async def generate_response(
     # Persona — memorable lines + time-since-last. Modes are deliberately
     # absent: Aria reads the room implicitly rather than being switched.
     aria_memorable_lines = _build_aria_memorable_lines()
+    try:
+        import aria_profile as _aria_profile_mod
+        aria_profile_md = _aria_profile_mod.load_profile() or "(empty — she's just getting to know him)"
+    except Exception as _e:
+        log.warning(f"aria_profile.load_profile failed: {_e}")
+        aria_profile_md = "(profile unavailable)"
     aria_time_since = _build_aria_time_since()
 
     system = ARIA_SYSTEM_PROMPT.format(
@@ -1647,6 +1726,7 @@ async def generate_response(
         project_dir=PROJECT_DIR,
         aria_memorable_lines=aria_memorable_lines,
         aria_time_since=aria_time_since,
+        aria_profile=aria_profile_md,
     )
     if lookup_status:
         system += f"\n\nACTIVE LOOKUPS:\n{lookup_status}\nIf asked about progress, report this status."
@@ -3492,6 +3572,19 @@ async def voice_handler(ws: WebSocket):
                 # register to the client alongside the audio so the avatar
                 # shifts at exactly the moment her voice starts.
                 response_text, register = _extract_register(response_text)
+
+                # Profile notes → persistent memory. Strip from spoken text
+                # and append each as a timestamped bullet to her profile.
+                # Failures (vault locked, DB error) are non-fatal — log and
+                # continue, the spoken reply still goes out.
+                response_text, _profile_notes = _extract_profile_notes(response_text)
+                if _profile_notes:
+                    try:
+                        import aria_profile as _aria_profile_mod
+                        for _note in _profile_notes:
+                            _aria_profile_mod.append_observation(_note)
+                    except Exception as _e:
+                        log.warning(f"aria_profile.append_observation failed: {_e}")
 
                 # TTS
                 tts = strip_markdown_for_tts(response_text)
