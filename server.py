@@ -1686,6 +1686,7 @@ async def generate_response(
     conversation_history: list[dict],
     last_response: str = "",
     session_summary: str = "",
+    current_conversation_id: Optional[int] = None,
 ) -> str:
     """Generate a JARVIS response using Anthropic API."""
     now = datetime.now()
@@ -1755,6 +1756,47 @@ async def generate_response(
             system += f"\n\nDOMAIN BRIEFS (his frameworks for this turn):\n{_domain_ctx}"
     except Exception as _e:
         log.warning(f"aria_domains.build_domain_context failed: {_e}")
+
+    # Cross-conversation recall via FTS. Surfaces "you mentioned X last
+    # month" without needing semantic embeddings. Skips short utterances
+    # ("hey", "what time is it"), excludes the live conversation (Aria
+    # shouldn't re-quote what she just said), caps to last 90 days to
+    # keep the recall feeling recent.
+    if len(text.strip()) >= 12:
+        try:
+            import conversations as _conv
+            matches = _conv.search_messages_fts(
+                text,
+                k=3,
+                exclude_conversation_id=current_conversation_id,
+                max_age_days=90,
+            )
+            if matches:
+                lines: list[str] = []
+                now_ts = datetime.now().timestamp()
+                for m in matches:
+                    days = max(0, int((now_ts - float(m["ts"])) / 86400))
+                    if days == 0:
+                        when = "earlier today"
+                    elif days == 1:
+                        when = "yesterday"
+                    elif days < 7:
+                        when = f"{days} days ago"
+                    elif days < 30:
+                        when = f"about {days // 7} week{'s' if days // 7 != 1 else ''} ago"
+                    else:
+                        when = f"about {days // 30} month{'s' if days // 30 != 1 else ''} ago"
+                    speaker = "HE" if m["role"] == "user" else "YOU"
+                    content = m["content"].strip().replace("\n", " ")
+                    if len(content) > 220:
+                        content = content[:217] + "…"
+                    lines.append(f"- {when}, {speaker}: \"{content}\"")
+                system += (
+                    "\n\nPRIOR EXCHANGES YOU REMEMBER (matched to this turn — use only if relevant; "
+                    "do not force the connection):\n" + "\n".join(lines)
+                )
+        except Exception as _e:
+            log.warning(f"conversations.search_messages_fts failed: {_e}")
 
     # Use conversation history — keep the last 20 messages for context
     # (older conversation is captured in session_summary)
@@ -3108,6 +3150,7 @@ async def voice_handler(ws: WebSocket):
                             cached_projects, history,
                             last_response=last_jarvis_response,
                             session_summary=session_summary,
+                            current_conversation_id=conversation_id,
                         )
                     else:
                         # Send to claude -p (full power)
@@ -3287,6 +3330,7 @@ async def voice_handler(ws: WebSocket):
                                 cached_projects, history,
                                 last_response=last_jarvis_response,
                                 session_summary=session_summary,
+                                current_conversation_id=conversation_id,
                             )
 
                             # Check for action tags embedded in LLM response
