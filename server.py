@@ -1744,6 +1744,18 @@ async def generate_response(
     if last_response:
         system += f'\n\nYOUR LAST RESPONSE (do not repeat this):\n"{last_response[:150]}"'
 
+    # Domain priors — load HIS frameworks for whatever domain(s) this turn
+    # touches. NOT general knowledge (Opus has it); this is the stance HE
+    # wants her to take in business / legal / fatherhood / etc. Cap 3 to
+    # keep prompt size bounded. Silent on no-match (default persona suffices).
+    try:
+        import aria_domains as _aria_domains_mod
+        _domain_ctx = _aria_domains_mod.build_domain_context(text)
+        if _domain_ctx:
+            system += f"\n\nDOMAIN BRIEFS (his frameworks for this turn):\n{_domain_ctx}"
+    except Exception as _e:
+        log.warning(f"aria_domains.build_domain_context failed: {_e}")
+
     # Use conversation history — keep the last 20 messages for context
     # (older conversation is captured in session_summary)
     messages = conversation_history[-20:]
