@@ -52,6 +52,19 @@ def _get_conn():
     return sess.memory_conn
 
 
+def _fts5_available(conn) -> bool:
+    """Some SQLCipher builds (notably the pysqlcipher3 wheel used in CI)
+    omit FTS5. Detect at runtime so the rest of the schema still works."""
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE temp._fts5_probe USING fts5(x)"
+        )
+        conn.execute("DROP TABLE temp._fts5_probe")
+        return True
+    except Exception:
+        return False
+
+
 def _init_schema(conn) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS conversations (
@@ -74,6 +87,53 @@ def _init_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_conv_last_message ON conversations(last_message_at DESC);
     """)
     conn.commit()
+
+    # FTS index over messages.content for cross-conversation recall.
+    # Created only when the SQLCipher build supports FTS5 — production
+    # container does; CI's pysqlcipher3 wheel sometimes doesn't. When
+    # unavailable, search_messages_fts returns [] silently and the rest
+    # of the conversations API works normally.
+    if _fts5_available(conn):
+        conn.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content,
+                conversation_id UNINDEXED,
+                role UNINDEXED,
+                ts UNINDEXED,
+                tokenize='porter unicode61'
+            );
+        """)
+        conn.commit()
+        # Backfill the FTS table on first init after unlock if it's empty
+        # but `messages` already has rows. Idempotent across restarts.
+        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        if fts_count == 0 and msg_count > 0:
+            log.info("conversations: backfilling messages_fts (%d rows)", msg_count)
+            conn.execute(
+                "INSERT INTO messages_fts (rowid, content, conversation_id, role, ts) "
+                "SELECT id, content, conversation_id, role, ts FROM messages"
+            )
+            conn.commit()
+    else:
+        log.warning("conversations: FTS5 unavailable in this SQLCipher build — semantic recall disabled")
+
+
+def _has_messages_fts(conn) -> bool:
+    """Cheap runtime check (used in hot path). Cached on the connection."""
+    cached = getattr(conn, "_jarvis_has_messages_fts", None)
+    if cached is not None:
+        return cached
+    try:
+        conn.execute("SELECT 1 FROM messages_fts LIMIT 0")
+        ok = True
+    except Exception:
+        ok = False
+    try:
+        conn._jarvis_has_messages_fts = ok  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +210,14 @@ def record_message(conversation_id: int, role: str, content: str) -> int:
         (conversation_id, role, content, now),
     )
     msg_id = cur.lastrowid
+    # Mirror into the FTS index when available. Skip silently if this
+    # SQLCipher build lacks FTS5 (e.g. CI's pysqlcipher3 wheel).
+    if _has_messages_fts(conn):
+        conn.execute(
+            "INSERT INTO messages_fts (rowid, content, conversation_id, role, ts) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (msg_id, content, conversation_id, role, now),
+        )
     conn.execute(
         "UPDATE conversations SET last_message_at = ?, "
         "message_count = message_count + 1 WHERE id = ?",
@@ -157,6 +225,86 @@ def record_message(conversation_id: int, role: str, content: str) -> int:
     )
     conn.commit()
     return msg_id
+
+
+def search_messages_fts(
+    query: str,
+    k: int = 5,
+    exclude_conversation_id: Optional[int] = None,
+    max_age_days: Optional[int] = None,
+) -> list[dict]:
+    """Full-text search across all stored messages. Returns up to k results
+    ranked by FTS5 BM25 (lower is more relevant). Filters:
+
+    - exclude_conversation_id: drop matches from the live conversation
+      (Aria shouldn't surface what she just said in this turn as "history")
+    - max_age_days: drop matches older than N days (default: no cap)
+
+    The query string is matched as-is by FTS5. Multi-word queries become
+    implicit AND. We strip FTS5 syntax characters that would break the
+    parse (quotes, AND/OR/NEAR operators in caps) so user-supplied text
+    can flow in safely without an explicit escape pass at every callsite.
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    # Strip FTS5 syntax that could cause parse errors with raw user text.
+    # We're matching content, not constructing queries — keep it simple.
+    import re as _re
+    q = _re.sub(r'["()]', " ", q)
+    q = _re.sub(r"\b(AND|OR|NOT|NEAR)\b", " ", q)
+    q = _re.sub(r"\s+", " ", q).strip()
+    # Require at least one alphanumeric token after sanitization.
+    if not _re.search(r"[A-Za-z0-9]", q):
+        return []
+    # Tokens get OR'd so we don't drop on every-word-must-match — short
+    # voice utterances rarely overlap on every word with the stored
+    # message; ranking handles relevance.
+    tokens = [t for t in q.split() if t]
+    if not tokens:
+        return []
+    fts_query = " OR ".join(tokens)
+
+    conn = _get_conn()
+    if not _has_messages_fts(conn):
+        return []
+    where_extra = ""
+    params: list = [fts_query]
+    if exclude_conversation_id is not None:
+        where_extra += " AND m.conversation_id != ?"
+        params.append(int(exclude_conversation_id))
+    if max_age_days is not None and max_age_days > 0:
+        cutoff = time.time() - (max_age_days * 86400)
+        where_extra += " AND m.ts >= ?"
+        params.append(cutoff)
+    params.append(int(k))
+
+    sql = f"""
+        SELECT m.id, m.conversation_id, m.role, m.content, m.ts,
+               bm25(messages_fts) AS score
+        FROM messages_fts
+        JOIN messages m ON m.id = messages_fts.rowid
+        WHERE messages_fts MATCH ?
+        {where_extra}
+        ORDER BY score
+        LIMIT ?
+    """
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except Exception as e:
+        log.warning("search_messages_fts failed: %s", e)
+        return []
+    return [
+        {
+            "id": int(r["id"]) if hasattr(r, "keys") else int(r[0]),
+            "conversation_id": int(r["conversation_id"]) if hasattr(r, "keys") else int(r[1]),
+            "role": r["role"] if hasattr(r, "keys") else r[2],
+            "content": r["content"] if hasattr(r, "keys") else r[3],
+            "ts": float(r["ts"]) if hasattr(r, "keys") else float(r[4]),
+            "score": float(r["score"]) if hasattr(r, "keys") else float(r[5]),
+        }
+        for r in rows
+    ]
 
 
 def load_recent_messages(conversation_id: int, limit: int = 40) -> list[dict]:
