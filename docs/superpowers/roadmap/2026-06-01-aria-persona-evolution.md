@@ -114,8 +114,8 @@ Upload PDFs (contracts, term sheets, P&Ls, school reports). Sidecar extracts tex
 - **Status:** not started. Multi-day. Depends on B.2 (storage) + sidecar PDF extract.
 
 ### B.4 Domain priors
-Small markdown briefs per domain: `data/domains/legal.md`, `business.md`, `finance.md`, `risk.md`, `partnerships.md`, `fatherhood.md`. NOT general knowledge (Opus has it) — but the frameworks HE cares about, the red flags HE wants flagged, the questions HE wants her to ask. Loaded into context when a relevant turn fires (detected via keyword classifier on his message).
-- **Status:** not started. ~1 PR per domain. Iterative — start with one, refine, then expand.
+Small markdown briefs per domain at `aria_domains/<name>.md`. NOT general knowledge (Opus has it) — but the frameworks HE cares about, the red flags HE wants flagged, the questions HE wants her to ask. Loaded into context when a relevant turn fires (keyword classifier in `aria_domains.py` matches → up to 3 briefs concatenated and injected into system prompt).
+- **Status:** infrastructure + 3 seed domains shipped (business / legal / fatherhood). Remaining domains (finance, risk, partnerships) are now trivial: drop a markdown file + add a keyword regex.
 
 ### B.5 Proactive turns
 Background loop scans recent conversations + calendar + open profile threads and decides if there's something worth surfacing on next connect. "You mentioned the partnership three weeks ago and went quiet. Where are you with it?" Right now she's reactive. A partner notices.
