@@ -1862,6 +1862,27 @@ async def generate_response(
     except Exception as _e:
         log.warning(f"aria_domains.build_domain_context failed: {_e}")
 
+    # Stored documents — if his turn references a document by title, the
+    # full text gets injected so she can actually read it. v1 is title-based
+    # only (e.g. "tell me what's wrong with the Acme term sheet" matches
+    # a stored doc titled "Acme term sheet"). FTS-based retrieval for
+    # unnamed-doc queries is deferred.
+    try:
+        import aria_documents as _aria_docs_mod
+        _ref_docs = _aria_docs_mod.find_referenced_documents(text, max_docs=2)
+        if _ref_docs:
+            _doc_blocks = []
+            for _d in _ref_docs:
+                _doc_blocks.append(
+                    f"--- DOCUMENT: {_d['title']} ---\n{_d['content']}"
+                )
+            system += (
+                "\n\nDOCUMENTS HE'S REFERENCING (he stored these previously; read them carefully before responding):\n"
+                + "\n\n".join(_doc_blocks)
+            )
+    except Exception as _e:
+        log.warning(f"aria_documents.find_referenced_documents failed: {_e}")
+
     # Cross-conversation recall via FTS. Surfaces "you mentioned X last
     # month" without needing semantic embeddings. Skips short utterances
     # ("hey", "what time is it"), excludes the live conversation (Aria
@@ -2494,6 +2515,70 @@ async def api_get_task(task_id: str):
     if not task:
         return JSONResponse(status_code=404, content={"error": "Task not found"})
     return {"task": task.to_dict()}
+
+
+# ---------------------------------------------------------------------------
+# Aria documents — text docs (contracts, term sheets, P&Ls) she can read
+# across conversations. PDF extraction is a follow-up; v1 takes text.
+# ---------------------------------------------------------------------------
+
+
+class DocumentCreate(BaseModel):
+    title: str
+    content: str
+
+
+@app.post("/api/documents")
+async def api_create_document(body: DocumentCreate):
+    try:
+        import aria_documents as _aria_docs
+        doc_id = _aria_docs.create_document(body.title, body.content)
+        return {"id": doc_id}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        log.exception("create_document failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/documents")
+async def api_list_documents():
+    try:
+        import aria_documents as _aria_docs
+        return {"documents": _aria_docs.list_documents()}
+    except Exception as e:
+        log.warning(f"list_documents failed: {e}")
+        return {"documents": []}
+
+
+@app.get("/api/documents/{doc_id}")
+async def api_get_document(doc_id: int):
+    try:
+        import aria_documents as _aria_docs
+        doc = _aria_docs.get_document(doc_id)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="document not found")
+        return doc
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("get_document failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/documents/{doc_id}")
+async def api_delete_document(doc_id: int):
+    try:
+        import aria_documents as _aria_docs
+        ok = _aria_docs.delete_document(doc_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="document not found")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("delete_document failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/conversations")
