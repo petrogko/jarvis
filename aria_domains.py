@@ -75,6 +75,50 @@ _DOMAIN_KEYWORDS: dict[str, re.Pattern] = {
         r")\b",
         re.IGNORECASE,
     ),
+    "finance": re.compile(
+        r"\b("
+        r"cash|cashflow|liquidity|"
+        r"tax|taxes|irs|hmrc|"
+        r"invest|investing|investment|investments|portfolio|"
+        r"stock|stocks|bond|bonds|etf|index fund|mutual fund|"
+        r"savings|saving|spending|"
+        r"debt|mortgage|loan|credit|"
+        r"net worth|allocation|diversif|"
+        r"retire|retirement|401k|ira|"
+        r"budget|expense|expenses|income|"
+        r"capital gain|dividend|yield|interest rate"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "risk": re.compile(
+        r"\b("
+        r"risk|risks|risky|"
+        r"insur\w*|"
+        r"downside|exposure|exposed|"
+        r"worst case|what if|hedge|hedged|"
+        r"safety net|fall back|fallback|"
+        r"single point|concentrated|concentration|"
+        r"reversible|irreversible|"
+        r"backup|contingency|"
+        r"liability|"
+        r"black swan|tail risk"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "partnerships": re.compile(
+        r"\b("
+        r"partner|partners|partnership|partnerships|"
+        r"co.?founder|cofounder|"
+        r"joint venture|jv|"
+        r"equity split|cap table|vesting|cliff|"
+        r"buyout|buy.?out|exit clause|"
+        r"decision rights?|veto|voting|"
+        r"strategic partner|strategic alliance|"
+        r"shareholder|"
+        r"working with|teaming up|collaborat(?:e|ion)"
+        r")\b",
+        re.IGNORECASE,
+    ),
 }
 
 # Cache loaded briefs in memory — they don't change at runtime.
