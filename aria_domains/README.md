@@ -46,4 +46,6 @@ The more specific these get, the more she becomes yours.
 - `business.md` — running his own thing, unit economics, leverage, friction
 - `legal.md` — contract reading, red flags, when to call the lawyer
 - `fatherhood.md` — his kids, presence over advice, when to name the heavy
-- _(more to follow: risk, finance, partnerships)_
+- `finance.md` — cash, liquidity, tax, allocation, when to call the specialist
+- `risk.md` — exposure, reversibility, base rates, what to actually worry about
+- `partnerships.md` — the cold conversation: power, exits, asymmetry, what gets renegotiated
