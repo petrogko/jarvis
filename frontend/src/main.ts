@@ -11,6 +11,7 @@ import { withAuthHeaders as _withAuthHeadersAvatar } from "./auth-token";
 import { createVoiceInput, createAudioPlayer, speakViaBrowser } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
+import { openDocumentsPanel } from "./documents-panel";
 import { awaitUnlock } from "./lock-screen";
 import { withAuthHeaders } from "./auth-token";
 import { attachTranscript, toggleTranscript, pushUserLine } from "./transcript-panel";
@@ -370,6 +371,14 @@ import "./style.css";
     e.stopPropagation();
     menuDropdown.style.display = "none";
     openSettings();
+  });
+
+  // Documents button — B.3 phase 1 UI
+  const btnDocuments = document.getElementById("btn-documents")!;
+  btnDocuments.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menuDropdown.style.display = "none";
+    openDocumentsPanel();
   });
 
   // First-time setup detection — check after a short delay for server readiness
