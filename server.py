@@ -2596,6 +2596,67 @@ async def api_get_document(doc_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ---------------------------------------------------------------------------
+# Aria profile — read/edit what she persistently knows about him.
+# Snapshots prior content on every replace so a bad edit can be rolled back.
+# ---------------------------------------------------------------------------
+
+
+class ProfileUpdate(BaseModel):
+    content: str
+
+
+@app.get("/api/profile")
+async def api_get_profile():
+    try:
+        import aria_profile as _aria_profile_mod
+        content = _aria_profile_mod.load_profile() or ""
+        return {"content": content, "bytes": len(content.encode("utf-8"))}
+    except Exception as e:
+        log.warning(f"get_profile failed: {e}")
+        return {"content": "", "bytes": 0}
+
+
+@app.put("/api/profile")
+async def api_put_profile(body: ProfileUpdate):
+    try:
+        import aria_profile as _aria_profile_mod
+        ok, msg = _aria_profile_mod.replace_profile(body.content)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("put_profile failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/profile/history")
+async def api_list_profile_history():
+    try:
+        import aria_profile as _aria_profile_mod
+        return {"snapshots": _aria_profile_mod.list_history()}
+    except Exception as e:
+        log.warning(f"list_profile_history failed: {e}")
+        return {"snapshots": []}
+
+
+@app.get("/api/profile/history/{snap_id}")
+async def api_get_profile_snapshot(snap_id: int):
+    try:
+        import aria_profile as _aria_profile_mod
+        content = _aria_profile_mod.get_history_snapshot(snap_id)
+        if content is None:
+            raise HTTPException(status_code=404, detail="snapshot not found")
+        return {"id": snap_id, "content": content}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("get_profile_snapshot failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/documents/{doc_id}")
 async def api_delete_document(doc_id: int):
     try:

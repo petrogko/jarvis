@@ -167,3 +167,100 @@ def reset_profile() -> None:
         (_INITIAL_TEMPLATE, now),
     )
     conn.commit()
+
+
+MAX_PROFILE_BYTES = 200 * 1024
+
+
+def _ensure_history_schema(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS aria_profile_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_profile_history_created
+            ON aria_profile_history(created_at DESC);
+        """
+    )
+    conn.commit()
+
+
+def _history_count(conn) -> int:
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM aria_profile_history").fetchone()[0])
+    except Exception:
+        return 0
+
+
+def replace_profile(new_content: str) -> tuple[bool, str]:
+    """Replace the whole profile. Snapshots the prior content into
+    aria_profile_history first so a bad edit can be rolled back. Returns
+    (ok, message). Caps history at 20 snapshots."""
+    if new_content is None:
+        return False, "content missing"
+    body_bytes = len(new_content.encode("utf-8"))
+    if body_bytes > MAX_PROFILE_BYTES:
+        return False, f"content exceeds {MAX_PROFILE_BYTES} bytes"
+    try:
+        conn = _get_conn()
+    except Exception as e:
+        return False, f"vault locked: {e}"
+    _ensure_history_schema(conn)
+    prior = load_profile()
+    if prior:
+        conn.execute(
+            "INSERT INTO aria_profile_history (content, created_at) VALUES (?, ?)",
+            (prior, time.time()),
+        )
+        conn.execute(
+            "DELETE FROM aria_profile_history WHERE id NOT IN ("
+            "  SELECT id FROM aria_profile_history "
+            "  ORDER BY created_at DESC LIMIT 20"
+            ")"
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO aria_profile (id, content, updated_at) VALUES (1, ?, ?)",
+        (new_content, time.time()),
+    )
+    conn.commit()
+    log.info("aria_profile: replaced (%d bytes; %d snapshots kept)",
+             body_bytes, _history_count(conn))
+    return True, "ok"
+
+
+def list_history() -> list[dict]:
+    """Newest-first snapshot list (id + ts + size, content not included)."""
+    try:
+        conn = _get_conn()
+    except Exception:
+        return []
+    _ensure_history_schema(conn)
+    rows = conn.execute(
+        "SELECT id, created_at, LENGTH(content) AS bytes "
+        "FROM aria_profile_history ORDER BY created_at DESC"
+    ).fetchall()
+    return [
+        {
+            "id": int(r["id"]) if hasattr(r, "keys") else int(r[0]),
+            "created_at": float(r["created_at"]) if hasattr(r, "keys") else float(r[1]),
+            "bytes": int(r["bytes"]) if hasattr(r, "keys") else int(r[2]),
+        }
+        for r in rows
+    ]
+
+
+def get_history_snapshot(snapshot_id: int) -> Optional[str]:
+    try:
+        conn = _get_conn()
+    except Exception:
+        return None
+    _ensure_history_schema(conn)
+    row = conn.execute(
+        "SELECT content FROM aria_profile_history WHERE id = ?",
+        (int(snapshot_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["content"] if hasattr(row, "keys") else row[0]

@@ -12,6 +12,7 @@ import { createVoiceInput, createAudioPlayer, speakViaBrowser } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { openDocumentsPanel } from "./documents-panel";
+import { openProfilePanel } from "./profile-panel";
 import { awaitUnlock } from "./lock-screen";
 import { withAuthHeaders } from "./auth-token";
 import { attachTranscript, toggleTranscript, pushUserLine } from "./transcript-panel";
@@ -371,6 +372,14 @@ import "./style.css";
     e.stopPropagation();
     menuDropdown.style.display = "none";
     openSettings();
+  });
+
+  // Profile button — see/edit what she knows about him
+  const btnProfile = document.getElementById("btn-profile")!;
+  btnProfile.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menuDropdown.style.display = "none";
+    openProfilePanel();
   });
 
   // Documents button — B.3 phase 1 UI
