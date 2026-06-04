@@ -731,6 +731,10 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
   Examples:
     "help me get my AT&T bill down" → [ACTION:CALL_DRAFT] vendor=AT&T | goal=Negotiate monthly bill down by at least 20% | notes=Been a customer 6 years, billed $145/mo
     "I need to cancel my Peloton" → [ACTION:CALL_DRAFT] vendor=Peloton | goal=Cancel membership effective end of cycle, no further charges | notes=Bought 2 years ago, no longer using
+- [ACTION:EMAIL_DRAFT] recipient=X | vendor=Y | goal=Z | notes=context — draft an email he'll send for life-admin work that's better in writing than over phone (refund disputes, complaint letters, written subscription cancellations, chargebacks, formal escalations). You produce a structured draft (goal, subject line, recipient suggestion, full email body in his voice, attachments to include, escalation path if no response). The draft lives in the Actions panel; he reviews, sends from his own address, and reports back. Prefer EMAIL over CALL when: there needs to be a paper trail, the matter is formal (insurance, legal, regulatory), it's outside business hours, or it's an escalation after a failed call.
+  Examples:
+    "I need a refund from that hotel" → [ACTION:EMAIL_DRAFT] vendor=Marriott | goal=Refund $480 for service failure on Oct 14 reservation | notes=Manager wouldn't address it on-site
+    "dispute the gym charge after I cancelled" → [ACTION:EMAIL_DRAFT] vendor=Equinox | goal=Reverse $230 charge for membership cancelled in writing on 9/15 | notes=Have cancellation confirmation email from them dated 9/15
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
 
@@ -1369,7 +1373,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     caller behaves as if no action was emitted.
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|GH_ISSUES_LIST|GH_ISSUE_CREATE|WEB_SEARCH|CALL_DRAFT)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|GH_ISSUES_LIST|GH_ISSUE_CREATE|WEB_SEARCH|CALL_DRAFT|EMAIL_DRAFT)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if not match:
@@ -1885,6 +1889,7 @@ async def generate_response(
             "- [ACTION:RESEARCH]    Deep research via Claude Code subprocess: AVAILABLE (but takes minutes; warn him it's not instant)",
             "- [ACTION:BUILD]       Spawn Claude Code to build a project:    AVAILABLE",
             "- [ACTION:CALL_DRAFT]  Draft a phone call he'll make manually:  AVAILABLE (outbound voice automation coming; for now, you prepare him)",
+            "- [ACTION:EMAIL_DRAFT] Draft an email he'll send manually:      AVAILABLE (formal/written life-admin: refunds, complaints, cancellations)",
             "- [ACTION:OPEN_TERMINAL] / Apple Calendar / Mail / Notes:        AVAILABLE (host AppleScript)",
             f"- Voice (Fish Audio cloud TTS): {'available' if _have_fish else 'local TTS only — Cori via Piper / say'}",
             "- Persistent profile + cross-conversation FTS recall + document store: AVAILABLE (these are silent — she uses them naturally)",
@@ -4030,6 +4035,59 @@ async def voice_handler(ws: WebSocket):
                                                 except Exception as _e:
                                                     log.warning("call_draft drafting failed for #%d: %s", aid, _e)
                                             asyncio.create_task(_do_draft())
+                                elif embedded_action["action"] == "email_draft":
+                                    # Same shape as call_draft but for written
+                                    # correspondence (refunds, complaints, etc.)
+                                    import aria_actions as _aria_actions
+                                    args = _aria_actions.parse_email_draft_args(embedded_action["target"])
+                                    if not args["goal"]:
+                                        response_text = "I need to know what the email is for, sir."
+                                    else:
+                                        try:
+                                            new_id = _aria_actions.create_action(
+                                                kind="email_draft",
+                                                goal=args["goal"],
+                                                vendor=args["vendor"],
+                                                phone=args["recipient"],  # field reused for recipient
+                                                plan="",
+                                            )
+                                        except Exception as _e:
+                                            log.warning("email_draft create failed: %s", _e)
+                                            response_text = "I couldn't open a draft for that one, sir."
+                                            new_id = None
+                                        if new_id is not None:
+                                            if not response_text.strip():
+                                                v = args["vendor"] or args["recipient"] or "them"
+                                                response_text = f"Drafting an email to {v}, sir. Open the Actions panel when you want to send it."
+
+                                            async def _do_email_draft(aid=new_id, a=dict(args)):
+                                                if anthropic_client is None:
+                                                    return
+                                                try:
+                                                    _r = a["recipient"] or "(unknown — you will look it up)"
+                                                    _v = a["vendor"] or "(not specified)"
+                                                    _g = a["goal"]
+                                                    _n = a["notes"] or "(none)"
+                                                    brief = (
+                                                        f"RECIPIENT: {_r}\n"
+                                                        f"VENDOR: {_v}\n"
+                                                        f"GOAL: {_g}\n"
+                                                        f"NOTES FROM HIM: {_n}\n\n"
+                                                        "Produce the structured email-draft markdown per your system instructions."
+                                                    )
+                                                    resp = await anthropic_client.messages.create(
+                                                        model=_ARIA_SONNET,
+                                                        max_tokens=1200,
+                                                        system=_aria_actions.EMAIL_DRAFT_SYSTEM_PROMPT,
+                                                        messages=[{"role": "user", "content": brief}],
+                                                    )
+                                                    plan_md = (resp.content[0].text or "").strip()
+                                                    if plan_md:
+                                                        _aria_actions.update_plan(aid, plan_md)
+                                                        log.info("email_draft #%d plan written (%d chars)", aid, len(plan_md))
+                                                except Exception as _e:
+                                                    log.warning("email_draft drafting failed for #%d: %s", aid, _e)
+                                            asyncio.create_task(_do_email_draft())
 
                 # Secrets redactor — second pass on the assistant reply
                 # (Aria can echo a secret back). Per advisor required fix #1
