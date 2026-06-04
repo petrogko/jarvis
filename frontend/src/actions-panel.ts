@@ -180,14 +180,14 @@ function createPanel(): HTMLDivElement {
       <div class="actions-header">
         <div>
           <h2>Actions Aria is tracking</h2>
-          <div class="sub">Phone calls she's drafted for you. v1: she writes the script, you place the call. Outbound voice automation lands next.</div>
+          <div class="sub">Phone calls and emails she's drafted for you. v1: she writes the script, you place the call or send the email. Outbound automation lands next.</div>
         </div>
         <button class="actions-close" aria-label="Close">&times;</button>
       </div>
       <div class="actions-body">
         <div id="actions-list"></div>
         <div id="actions-empty" class="actions-empty" style="display:none">
-          No actions yet. Say something like "help me negotiate my AT&amp;T bill" and Aria will draft a script here.
+          No actions yet. Say something like "help me negotiate my AT&amp;T bill" or "I need a refund email to Marriott" and Aria will draft it here.
         </div>
       </div>
     </div>
@@ -211,7 +211,12 @@ function renderCard(a: ActionRecord, root: HTMLDivElement): HTMLDivElement {
     : `<div class="action-plan empty">Aria is still drafting this — refresh in a moment.</div>`;
 
   const vendor = a.vendor ? escapeHtml(a.vendor) : "(unnamed)";
-  const phoneStr = a.phone ? ` · ${escapeHtml(a.phone)}` : "";
+  // `phone` field is reused as `recipient` for email_draft actions.
+  const contactLabel = a.kind === "email_draft" ? "to" : "tel";
+  const contactStr = a.phone
+    ? ` · <span style="font-family:ui-monospace,monospace">${contactLabel} ${escapeHtml(a.phone)}</span>`
+    : "";
+  const kindLabel = a.kind === "email_draft" ? "email draft" : "call draft";
 
   const outcomeHtml = a.status === "completed" && (a.outcome_notes || a.outcome_value_cents)
     ? `<div class="action-meta" style="margin-top:8px;color:#7eda9b">
@@ -226,7 +231,7 @@ function renderCard(a: ActionRecord, root: HTMLDivElement): HTMLDivElement {
       </div>
       <span class="status-badge ${a.status}">${a.status.replace("_", " ")}</span>
     </div>
-    <div class="action-meta">#${a.id} · ${a.kind} · ${formatWhen(a.created_at)}${phoneStr}</div>
+    <div class="action-meta">#${a.id} · ${kindLabel} · ${formatWhen(a.created_at)}${contactStr}</div>
     ${planHtml}
     ${outcomeHtml}
     <div class="action-controls"></div>

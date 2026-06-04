@@ -28,7 +28,7 @@ from typing import Any, Optional
 log = logging.getLogger(__name__)
 
 
-VALID_KINDS = ("call_draft",)
+VALID_KINDS = ("call_draft", "email_draft")
 VALID_STATUSES = ("drafted", "in_progress", "completed", "abandoned")
 MAX_PLAN_BYTES = 32 * 1024
 MAX_OUTCOME_BYTES = 16 * 1024
@@ -283,6 +283,59 @@ def parse_call_draft_args(target: str) -> dict:
         if k in out:
             out[k] = v
     return out
+
+
+def parse_email_draft_args(target: str) -> dict:
+    """Parse [ACTION:EMAIL_DRAFT] target payload.
+    Format: pipe-delimited key=value pairs.
+        recipient=billing@comcast.com | vendor=Comcast | goal=Dispute charge | notes=...
+    Required: goal (or lone-segment fallback)."""
+    parts = [p.strip() for p in (target or "").split("|") if p.strip()]
+    out = {"recipient": "", "vendor": "", "goal": "", "notes": ""}
+    for p in parts:
+        if "=" not in p:
+            if not out["goal"]:
+                out["goal"] = p
+            continue
+        k, _, v = p.partition("=")
+        k = k.strip().lower()
+        v = v.strip()
+        if k in out:
+            out[k] = v
+    return out
+
+
+EMAIL_DRAFT_SYSTEM_PROMPT = """You are drafting an email the user will send to handle a piece of life-admin work — a refund dispute, a complaint, a subscription cancellation, a billing inquiry, a chargeback escalation. You are not sending the email; he will, from his own address.
+
+The plan you produce is structured markdown with these sections, in this order:
+
+## Goal
+One sentence: what success looks like. Concrete (a refund of $X, a cancellation effective by date Y, a written response within Z days).
+
+## Subject line
+Exact, specific, hard to ignore. Names the issue, the account, and the desired outcome at a glance.
+Example shape: "Refund request — confirmation #ABC123 — service failure Oct 14"
+
+## To / CC (suggested)
+Primary recipient address (or "you'll need to look this up"). Suggested CCs if escalation matters (consumer protection, BBB, state AG, the company's general counsel for serious matters).
+
+## The email body
+Written in his voice — first person, calm, factual, specific. Use these moves in order:
+1. State the issue in one paragraph. Dates, dollar amounts, account/order/confirmation numbers up front.
+2. State what was promised vs. what happened. Quote contract or marketing language if relevant.
+3. State the remedy he wants. Specific. Time-bound.
+4. State the consequence if it isn't resolved. Proportionate — chargeback for small money, regulatory complaint for larger, legal counsel for serious.
+5. Sign off with a deadline (e.g. "I'll need a response by [date 7 business days out]").
+
+The email should be ~200-350 words. Long enough to be taken seriously, short enough to actually be read. No threats. No emotional language. The tone is "this is going to get resolved one way or the other."
+
+## Attachments to include
+A short bulleted list of what to attach (screenshots of the original confirmation, billing statements, prior correspondence).
+
+## What to do if no response
+A one-paragraph escalation path: who to contact next (specific named office/role), what additional pressure to apply (chargeback window, regulatory complaint, social media), and a clear deadline for that escalation.
+
+Tone: precise, calm, low-emotion, hard to dismiss. Do not use exclamation marks. Do not use words like "frustrated," "outraged," "ridiculous." Use specific facts. The reader (a customer service rep or supervisor) should be able to scan it and immediately understand what needs to happen."""
 
 
 CALL_DRAFT_SYSTEM_PROMPT = """You are drafting a phone-call script the user will follow when they place this call themselves. You are not making the call — they are. Your job is to give them what they need to walk in calm and effective.
