@@ -13,6 +13,7 @@ import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { openDocumentsPanel } from "./documents-panel";
 import { openProfilePanel } from "./profile-panel";
+import { openActionsPanel } from "./actions-panel";
 import { awaitUnlock } from "./lock-screen";
 import { withAuthHeaders } from "./auth-token";
 import { attachTranscript, toggleTranscript, pushUserLine } from "./transcript-panel";
@@ -380,6 +381,14 @@ import "./style.css";
     e.stopPropagation();
     menuDropdown.style.display = "none";
     openProfilePanel();
+  });
+
+  // Actions button — Pine-AI-direction external-action tracker
+  const btnActions = document.getElementById("btn-actions")!;
+  btnActions.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menuDropdown.style.display = "none";
+    openActionsPanel();
   });
 
   // Documents button — B.3 phase 1 UI

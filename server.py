@@ -727,6 +727,10 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
 - [ACTION:GH_ISSUES_LIST owner/repo] — list open GitHub issues on a repo (e.g. petrogko/jarvis)
 - [ACTION:GH_ISSUE_CREATE owner/repo|title|body] — open a new GitHub issue
 - [ACTION:WEB_SEARCH query text] — search the live web via Tavily. Use when the user asks "look up", "search", "find out", "what's the latest on…", "google that". Returns an AI summary + top sources you can speak back. Do NOT use for code-project work (use PROMPT_PROJECT) or for pulling up a specific URL (use BROWSE).
+- [ACTION:CALL_DRAFT] vendor=X | phone=Y | goal=Z | notes=any context — draft a phone-call script he'll follow when he places the call himself (Pine-AI-style life-admin work: bill negotiation, refund disputes, subscription cancellations, complaints). You produce a structured plan (goal, before-you-dial info, opening line, branched script, escalation moves, what to write down, when to stop). The plan lives in the Actions panel; he reads it, makes the call, and reports the outcome back to you. Use when he says things like "help me negotiate my Comcast bill," "I need to cancel my gym membership," "I want a refund from that hotel." Outbound-voice automation lands in a follow-up; for now you are preparing him to make the call well.
+  Examples:
+    "help me get my AT&T bill down" → [ACTION:CALL_DRAFT] vendor=AT&T | goal=Negotiate monthly bill down by at least 20% | notes=Been a customer 6 years, billed $145/mo
+    "I need to cancel my Peloton" → [ACTION:CALL_DRAFT] vendor=Peloton | goal=Cancel membership effective end of cycle, no further charges | notes=Bought 2 years ago, no longer using
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
 
@@ -1365,7 +1369,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     caller behaves as if no action was emitted.
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|GH_ISSUES_LIST|GH_ISSUE_CREATE|WEB_SEARCH)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|GH_ISSUES_LIST|GH_ISSUE_CREATE|WEB_SEARCH|CALL_DRAFT)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if not match:
@@ -1850,6 +1854,21 @@ async def generate_response(
     if last_response:
         system += f'\n\nYOUR LAST RESPONSE (do not repeat this):\n"{last_response[:150]}"'
 
+    # Open actions — Pine-style external tasks she's currently tracking.
+    # Surfaces in her prompt so she can refer to them ("did the AT&T call
+    # work out?") without the user re-priming her.
+    try:
+        import aria_actions as _aria_actions_mod
+        _open_actions = _aria_actions_mod.open_actions_summary_for_prompt(max_actions=5)
+        if _open_actions:
+            system += (
+                "\n\nOPEN ACTIONS YOU'RE TRACKING (call_draft = a phone call he's planning, not one you've made):\n"
+                + _open_actions
+                + "\n\nWhen relevant, ask about these by id or vendor. Don't force the topic."
+            )
+    except Exception as _e:
+        log.warning(f"aria_actions.open_actions_summary failed: {_e}")
+
     # Capability awareness — tell her plainly which integrations are
     # actually wired up so she doesn't claim to do things she can't.
     # Triggered by live feedback: she said "On it, sir" to a research
@@ -1865,6 +1884,7 @@ async def generate_response(
             f"- [ACTION:GH_ISSUE_*]  GitHub issues read/write:  {'AVAILABLE' if _have_github else 'UNAVAILABLE — GitHub token not in vault'}",
             "- [ACTION:RESEARCH]    Deep research via Claude Code subprocess: AVAILABLE (but takes minutes; warn him it's not instant)",
             "- [ACTION:BUILD]       Spawn Claude Code to build a project:    AVAILABLE",
+            "- [ACTION:CALL_DRAFT]  Draft a phone call he'll make manually:  AVAILABLE (outbound voice automation coming; for now, you prepare him)",
             "- [ACTION:OPEN_TERMINAL] / Apple Calendar / Mail / Notes:        AVAILABLE (host AppleScript)",
             f"- Voice (Fish Audio cloud TTS): {'available' if _have_fish else 'local TTS only — Cori via Piper / say'}",
             "- Persistent profile + cross-conversation FTS recall + document store: AVAILABLE (these are silent — she uses them naturally)",
@@ -2669,6 +2689,100 @@ async def api_delete_document(doc_id: int):
         raise
     except Exception as e:
         log.exception("delete_document failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Aria actions — long-running external-action tracker (Pine-AI-style work).
+# v1 surface: call_draft only (Aria writes the script; you make the call).
+# Outbound voice executor (Bland.ai / VAPI) lands in the next PR.
+# ---------------------------------------------------------------------------
+
+
+class ActionOutcome(BaseModel):
+    outcome_notes: Optional[str] = None
+    outcome_value_cents: Optional[int] = None
+    mark_completed: bool = True
+
+
+class ActionStatusUpdate(BaseModel):
+    status: str
+
+
+@app.get("/api/actions")
+async def api_list_actions(status: Optional[str] = None):
+    try:
+        import aria_actions as _aria_actions
+        return {"actions": _aria_actions.list_actions(status=status)}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        log.warning(f"list_actions failed: {e}")
+        return {"actions": []}
+
+
+@app.get("/api/actions/{action_id}")
+async def api_get_action(action_id: int):
+    try:
+        import aria_actions as _aria_actions
+        act = _aria_actions.get_action(action_id)
+        if act is None:
+            raise HTTPException(status_code=404, detail="action not found")
+        return act
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("get_action failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/actions/{action_id}/status")
+async def api_update_action_status(action_id: int, body: ActionStatusUpdate):
+    try:
+        import aria_actions as _aria_actions
+        ok = _aria_actions.update_status(action_id, body.status)
+        if not ok:
+            raise HTTPException(status_code=404, detail="action not found")
+        return {"ok": True}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("update_action_status failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/actions/{action_id}/outcome")
+async def api_update_action_outcome(action_id: int, body: ActionOutcome):
+    try:
+        import aria_actions as _aria_actions
+        _aria_actions.update_outcome(
+            action_id,
+            outcome_notes=body.outcome_notes or "",
+            outcome_value_cents=body.outcome_value_cents,
+            mark_completed=body.mark_completed,
+        )
+        return {"ok": True}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        log.exception("update_action_outcome failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/actions/{action_id}")
+async def api_delete_action(action_id: int):
+    try:
+        import aria_actions as _aria_actions
+        ok = _aria_actions.delete_action(action_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="action not found")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("delete_action failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3858,6 +3972,64 @@ async def voice_handler(ws: WebSocket):
                                         asyncio.create_task(
                                             _lookup_and_report("web-search", _do_web_search, ws, history=history, voice_state=voice_state)
                                         )
+                                elif embedded_action["action"] == "call_draft":
+                                    # Aria has decided to draft a phone call he should make.
+                                    # Parse args (vendor=...|phone=...|goal=...|notes=...),
+                                    # create the action row, then dispatch an LLM call (Sonnet
+                                    # — the drafting needs nuance, not Haiku speed) to fill in
+                                    # the structured plan. The frontend Actions panel picks it
+                                    # up on next refresh.
+                                    import aria_actions as _aria_actions
+                                    args = _aria_actions.parse_call_draft_args(embedded_action["target"])
+                                    if not args["goal"]:
+                                        response_text = "I need to know what the call is for, sir."
+                                    else:
+                                        try:
+                                            new_id = _aria_actions.create_action(
+                                                kind="call_draft",
+                                                goal=args["goal"],
+                                                vendor=args["vendor"],
+                                                phone=args["phone"],
+                                                plan="",  # filled in by background task below
+                                            )
+                                        except Exception as _e:
+                                            log.warning("call_draft create failed: %s", _e)
+                                            response_text = "I couldn't open a draft for that one, sir."
+                                            new_id = None
+                                        if new_id is not None:
+                                            # Use the spoken response if Aria included one; else default.
+                                            if not response_text.strip():
+                                                v = args["vendor"] or "them"
+                                                response_text = f"I've drafted a script for {v}, sir. Open the Actions panel when you're ready."
+
+                                            async def _do_draft(aid=new_id, a=dict(args)):
+                                                if anthropic_client is None:
+                                                    return
+                                                try:
+                                                    _v = a["vendor"] or "(not specified)"
+                                                    _p = a["phone"] or "(unknown — he will look it up)"
+                                                    _g = a["goal"]
+                                                    _n = a["notes"] or "(none)"
+                                                    brief = (
+                                                        f"VENDOR: {_v}\n"
+                                                        f"PHONE: {_p}\n"
+                                                        f"GOAL: {_g}\n"
+                                                        f"NOTES FROM HIM: {_n}\n\n"
+                                                        "Produce the structured call-draft markdown per your system instructions."
+                                                    )
+                                                    resp = await anthropic_client.messages.create(
+                                                        model=_ARIA_SONNET,
+                                                        max_tokens=900,
+                                                        system=_aria_actions.CALL_DRAFT_SYSTEM_PROMPT,
+                                                        messages=[{"role": "user", "content": brief}],
+                                                    )
+                                                    plan_md = (resp.content[0].text or "").strip()
+                                                    if plan_md:
+                                                        _aria_actions.update_plan(aid, plan_md)
+                                                        log.info("call_draft #%d plan written (%d chars)", aid, len(plan_md))
+                                                except Exception as _e:
+                                                    log.warning("call_draft drafting failed for #%d: %s", aid, _e)
+                                            asyncio.create_task(_do_draft())
 
                 # Secrets redactor — second pass on the assistant reply
                 # (Aria can echo a secret back). Per advisor required fix #1
